@@ -48,9 +48,11 @@ import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, Git
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
+import { DeployOrphanBatchReconcilerCycle } from './deploy/DeployOrphanBatchReconcilerCycle.js'
 import { SetupCompletionConsumer } from './setup/SetupCompletionConsumer.js'
 import { SetupCompletionSweeper } from './setup/SetupCompletionSweeper.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
+import { dispatchDeployResultFallback } from './deploy/DeployResultCallback.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorMissionRecoveryReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
@@ -102,6 +104,11 @@ let testGateJobReconciler: TestGateJobReconciler | null = null
 let messageProcessingClaimReconciler: MessageProcessingClaimReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let deployOrphanBatchReconcilerTimer: NodeJS.Timeout | null = null
+// Ciclo endurecido do reconciliador de batches órfãos (incidente 19/11):
+// try/catch independentes por fase + contagem de falhas consecutivas +
+// alerta Telegram. Instância única de processo (sobrevive a trocas de
+// liderança para o /api/motor/stats continuar enxergando a contagem).
+let deployOrphanReconcilerCycle: DeployOrphanBatchReconcilerCycle | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
 // TASK_ENQUEUED tem consumo real (setup de projeto da Biblioteca) e não pode
 // ser despachado sem consumidor (task-p2-1047, subtarefa 3).
@@ -920,6 +927,20 @@ async function start() {
       console.error('[Motor v3] PostDeployVerifier.bootScan falha inesperada:', error instanceof Error ? error.message : String(error))
     })
     let deployOrphanBatchReconcilerRunning = false
+    if (!deployOrphanReconcilerCycle) {
+      deployOrphanReconcilerCycle = new DeployOrphanBatchReconcilerCycle(
+        {
+          requestReconciliation: () => deployConsumer!.requestReconciliation(),
+          reconcileOrphanPendingBatches: () => deployConsumer!.reconcileOrphanPendingBatches(),
+          enqueuePendingDispatches: () => deployConsumer!.enqueuePendingDispatches(),
+        },
+        {
+          alertAfterFailures: Number(process.env.MOTOR_DEPLOY_RECONCILER_ALERT_AFTER_FAILURES || 3),
+          alertCooldownMinutes: Number(process.env.MOTOR_DEPLOY_RECONCILER_ALERT_COOLDOWN_MINUTES || process.env.MOTOR_DLQ_ALERT_COOLDOWN_MINUTES || 60),
+          alertSender: new TelegramDlqAlertSender(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_DLQ_CHAT_ID),
+        },
+      )
+    }
     // Alvo da observabilidade de DLQ: filas mortas acumulam em silêncio
     // (incidente 2026-10-23: 45 mensagens em motor.commands.dlq sem alerta).
     const dlqWatchTargets: Array<{ name: string; probe: RabbitMqTransport }> = [
@@ -953,21 +974,10 @@ async function start() {
         try {
           // Reemite a reconciliação de todos os batches running em cada ciclo;
           // o callback remoto é apenas uma otimização, nunca a única fonte de
-          // conclusão do deploy.
-          await deployConsumer!.requestReconciliation()
-          await deployConsumer!.reconcileOrphanPendingBatches()
-          // Re-enqueueia pedidos 'pending' sem batch em TODO ciclo — antes só
-          // ocorria quando um batch órfão era limpo, e um dispatch perdido
-          // (skip por pipeline não drenado, mensagem consumida sem claim ou
-          // restart entre outbox e consume) deixava o pedido pendente para
-          // sempre com motor ocioso (incidente 2026-11-22: deploy_request 437,
-          // gate verde há 24h, nenhum evento novo para re-disparar).
-          // Idempotente: insertPendingDispatches só age sobre grupos pending
-          // reais; o portão de drenagem do claimBatch continua decidindo.
-          const dispatched = await deployConsumer!.enqueuePendingDispatches()
-          if (dispatched > 0) {
-            console.log(JSON.stringify({ event: 'deploy_pending_requests_reenqueued', groups: dispatched }))
-          }
+          // conclusão do deploy. Cada fase tem try/catch próprio dentro do
+          // cycle (incidente 19/11: uma fase quebrada não pode travar as
+          // demais nem silenciar o ciclo por 1h).
+          await deployOrphanReconcilerCycle!.runCycle()
         } catch (error) {
           console.error(JSON.stringify({
             event: 'deploy_orphan_pending_batches_cycle_failed',
@@ -1068,6 +1078,9 @@ async function start() {
           primitiveDivergences,
           // Observabilidade de DLQ (varredura a cada 5 min; null = não medido).
           dlqDepths,
+          // Ciclo deployOrphanBatchReconciler (incidente 19/11): falhas
+          // consecutivas do ciclo de reconciliação de batches órfãos.
+          deployReconciler: deployOrphanReconcilerCycle?.getHealth() ?? null,
         }))
         return
       }
@@ -1536,7 +1549,22 @@ async function start() {
         if (!status) throw new Error('Resultado de deploy inválido')
         const batchId = deployResultMatch[1]!
         if (!/^[A-Za-z0-9_-]+$/.test(batchId)) throw new Error('Identificador de lote inválido')
-        const message = await dispatchCommand('DEPLOY_BATCH_RESULT_RECEIVED', 'system', `deploy-result-${batchId}`, { batchId, status })
+        // Callback honesto: só responde aceito quando existe mensagem durável.
+        // Slot não-líder/boot (outboxPublisher null) persiste direto no outbox —
+        // o líder publica depois. Nunca dispatch in-memory sem consumidor.
+        let message: QueueMessage
+        if (outboxPublisher) {
+          message = await dispatchCommand('DEPLOY_BATCH_RESULT_RECEIVED', 'system', `deploy-result-${batchId}`, { batchId, status })
+        } else {
+          const fallback = await dispatchDeployResultFallback({ batchId, status, pool })
+          if (!fallback.ok) {
+            console.error('[Motor v3] Callback de deploy sem outbox e persistência direta falhou:', fallback.error)
+            res.writeHead(503, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'Outbox indisponível' }))
+            return
+          }
+          message = fallback.message
+        }
         res.writeHead(202, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, accepted: true, messageId: message.messageId }))
         return

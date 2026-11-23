@@ -36,6 +36,10 @@ export class DeployConsumer {
     private readonly githubKnownHostsPath = process.env.GITHUB_KNOWN_HOSTS_PATH || '/root/.ssh/known_hosts',
     private readonly githubPreflightTimeoutMs = Number(process.env.MOTOR_GITHUB_PREFLIGHT_TIMEOUT_MS || 10_000),
     private readonly taskEvents?: TaskEventSink,
+    // Reconcile com retry (tarefa motor-deploy-reconcile-hardening, subtarefa 2): intervalo
+    // de reagendamento quando o script remoto ainda está em execução. Padrão compatível
+    // com o ciclo de 5min do reconciliador; pode ser reduzido via env para testes.
+    private readonly reconcileRetrySeconds = Number(process.env.MOTOR_DEPLOY_RECONCILE_RETRY_SECONDS || 300),
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -223,6 +227,19 @@ export class DeployConsumer {
       const taskIds = await this.repository.completeBatch(batchId, success, reason, message)
       if (!success && taskIds.length > 0) await this.routeGovernedFailure(message, 'deploy_failed', 'DEPLOY_FAILED', reason ?? 'Falha no deploy')
       await this.log(operationId, 3, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds, reason, remoteState: remoteResult.state, diagnostic: remoteResult.diagnostic } })
+    } else {
+      // Estado não-terminal (script ainda em execução: 'active', ou marcador ausente sem
+      // timeout): antes a mensagem era descartada em silêncio, deixando o batch órfão até o
+      // próximo ciclo de 5min — e cada ciclo reemitia com correlation fixo. Agora reagendamos
+      // uma nova DEPLOY_RECONCILIATION_REQUESTED com executionId/correlationId únicos por
+      // ciclo (sufixo timestamp) e timestamp adiado no outbox (mesmo padrão de
+      // QueueConsumer.deferTransientFailure), com log estruturado da decisão.
+      const stamp = Date.now()
+      const nextExecutionId = `deploy-reconcile-${batchId}-${stamp}`
+      const correlationId = `deploy-reconcile-cycle-${batchId}-${stamp}`
+      await this.repository.scheduleReconciliation(message, batchId, nextExecutionId, correlationId, this.reconcileRetrySeconds * 1000)
+      console.log(JSON.stringify({ event: 'deploy_reconciliation_rescheduled', batchId, remoteState: remoteResult.state, nextExecutionId, correlationId, deferSeconds: this.reconcileRetrySeconds, diagnostic: remoteResult.diagnostic }))
+      await this.log(operationId, 4, 'action', 'succeeded', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: 'deploy_reconciliation_rescheduled', result: { batchId, remoteState: remoteResult.state, deferSeconds: this.reconcileRetrySeconds, nextExecutionId, correlationId } })
     }
   }
 
