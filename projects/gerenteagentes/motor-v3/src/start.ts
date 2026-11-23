@@ -955,8 +955,19 @@ async function start() {
           // o callback remoto é apenas uma otimização, nunca a única fonte de
           // conclusão do deploy.
           await deployConsumer!.requestReconciliation()
-          const cleaned = await deployConsumer!.reconcileOrphanPendingBatches()
-          if (cleaned > 0) await deployConsumer!.enqueuePendingDispatches()
+          await deployConsumer!.reconcileOrphanPendingBatches()
+          // Re-enqueueia pedidos 'pending' sem batch em TODO ciclo — antes só
+          // ocorria quando um batch órfão era limpo, e um dispatch perdido
+          // (skip por pipeline não drenado, mensagem consumida sem claim ou
+          // restart entre outbox e consume) deixava o pedido pendente para
+          // sempre com motor ocioso (incidente 2026-11-22: deploy_request 437,
+          // gate verde há 24h, nenhum evento novo para re-disparar).
+          // Idempotente: insertPendingDispatches só age sobre grupos pending
+          // reais; o portão de drenagem do claimBatch continua decidindo.
+          const dispatched = await deployConsumer!.enqueuePendingDispatches()
+          if (dispatched > 0) {
+            console.log(JSON.stringify({ event: 'deploy_pending_requests_reenqueued', groups: dispatched }))
+          }
         } catch (error) {
           console.error(JSON.stringify({
             event: 'deploy_orphan_pending_batches_cycle_failed',

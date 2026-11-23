@@ -4,6 +4,7 @@ import { insertDeduplicatedChatMessage } from '../execution/blockerChatAlert.js'
 import type { QueueMessage } from '../queue/index.js'
 import {
   REQUIRED_SETUP_ARTIFACTS,
+  deriveSetupChecklist,
   resolveSetupProjectDir,
   validateSetupCompletion,
   type FsLike,
@@ -221,13 +222,37 @@ export async function reconcileSetupCompletion(
   // (3) Validador combinado da subtarefa 1: evidência JSON + artefatos em
   // disco (<repoRoot>/projects/<slug> via repo_path com mapeamento
   // cross-container). Falha de resolução de caminho vira razão explícita.
+  //
+  // CHECKLIST DERIVADO (incidente 2026-11-23): evidências históricas com
+  // smoke_test válido mas SEM checklist (missões concluídas antes de 3936d637
+  // exigir o checklist no JSON) nunca convergiriam — a tarefa está completed,
+  // nada gera evidência nova e o re-disparo é no-op. Como os itens do
+  // checklist monorepo são fatos de disco, derivamo-los deterministicamente
+  // (deriveSetupChecklist) com procedência auditável (`checklist_source`).
+  // O smoke_test NUNCA é derivado: sem evidência HTTP 2xx real do DEV,
+  // continua reprovando. Layout standalone não é derivável (itens são
+  // julgamento do agente) — mantém a reprovação honesta.
   let gate: SetupGateResult
   try {
-    const projectDir = await resolveSetupProjectDir(task.repo_path ?? null, slug, task.project_layout ?? 'monorepo')
+    const layout = task.project_layout ?? 'monorepo'
+    const projectDir = await resolveSetupProjectDir(task.repo_path ?? null, slug, layout)
+    let evidence: unknown = candidate
+    if (
+      layout === 'monorepo' &&
+      candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate) &&
+      typeof (candidate as { checklist?: unknown }).checklist !== 'object' &&
+      hasValidSmokeTest((candidate as { smoke_test?: unknown }).smoke_test)
+    ) {
+      const derived = await deriveSetupChecklist(projectDir, options.fs)
+      evidence = { ...candidate, checklist: derived, checklist_source: 'derived_disk_verification' }
+      console.warn(
+        `[Motor v3] reconcileSetupCompletion: checklist derivado do disco para '${slug}' (evidência histórica sem checklist): ${JSON.stringify(derived)}`,
+      )
+    }
     gate = await validateSetupCompletion({
-      evidence: candidate,
+      evidence,
       projectDir,
-      layout: task.project_layout ?? 'monorepo',
+      layout,
       fs: options.fs,
     })
   } catch (error) {

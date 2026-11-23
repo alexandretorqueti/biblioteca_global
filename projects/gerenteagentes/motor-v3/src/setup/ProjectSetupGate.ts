@@ -155,6 +155,67 @@ export async function resolveSetupProjectDir(
 }
 
 /**
+ * Checklist monorepo derivado DETERMINISTICAMENTE do disco (incidente
+ * 2026-11-23 — setups históricos travados em 'checklist ausente').
+ *
+ * Contexto: o gate exige `checklist` + `smoke_test` no MESMO objeto JSON da
+ * evidência, mas a missão de setup monorepo só passou a pedir o checklist em
+ * 3936d637 (22/11). Setups concluídos antes disso (gerenteagentes, gestao-de-
+ * tarefas-global) gravaram evidência com smoke_test válido e SEM checklist —
+ * e como a tarefa já está completed, nenhuma re-execução gera evidência nova:
+ * a re-verificação do sweeper reprova em loop permanente sem caminho de
+ * correção (re-disparo esgotado, resume de tarefa completed é no-op).
+ *
+ * Em vez de exigir autodeclaração do DEV, os itens do checklist monorepo são
+ * fatos objetivos verificáveis em disco — e para projetos cujo deploy já
+ * succeeded e o smoke_test retornou 2xx, os registros estão empiricamente
+ * funcionando (DynamicSchemaRegistry carrega projects/<slug>/schema.ts por
+ * autodescoberta no boot; o registry do front usa import.meta.glob em
+ * projects/<slug>/config.ts — a presença dos arquivos É o registro).
+ *
+ * Itens derivados:
+ * - structure: diretório do projeto com package.json;
+ * - configSchemaMigrations: config.ts|config.json + schema.ts + migrations/;
+ * - registries: schema.ts + config.ts (autodescoberta — sem arquivo manual);
+ * - repoPath: o diretório do projeto resolveu (resolveSetupProjectDir).
+ *
+ * O smoke_test NUNCA é derivado — continua exigindo evidência HTTP 2xx real
+ * gravada pelo DEV. Usado apenas quando a evidência tem smoke_test válido e o
+ * checklist está ausente; procedência auditável via `checklist_source`.
+ * Layout standalone NÃO é derivável (repoInspected/analystContext/commitPush
+ * são julgamentos do agente, não fatos de disco) — mantém a reprovação.
+ */
+export async function deriveSetupChecklist(projectDir: string, fs: FsLike = defaultFs): Promise<SetupChecklist> {
+  const exists = async (path: string): Promise<boolean> => {
+    try {
+      await fs.access(resolve(path))
+      return true
+    } catch {
+      return false
+    }
+  }
+  const isDir = async (path: string): Promise<boolean> => {
+    try {
+      return (await fs.stat(resolve(path))).isDirectory()
+    } catch {
+      return false
+    }
+  }
+  const dir = String(projectDir ?? '').trim()
+  const dirOk = dir !== '' && (await isDir(dir))
+  const packageOk = dirOk && (await exists(join(dir, 'package.json')))
+  const hasConfig = dirOk && ((await exists(join(dir, 'config.ts'))) || (await exists(join(dir, 'config.json'))))
+  const hasSchema = dirOk && (await exists(join(dir, 'schema.ts')))
+  const hasMigrations = dirOk && (await isDir(join(dir, 'migrations')))
+  return {
+    structure: packageOk,
+    configSchemaMigrations: hasConfig && hasSchema && hasMigrations,
+    registries: hasSchema && hasConfig,
+    repoPath: dirOk,
+  }
+}
+
+/**
  * Validador combinado da conclusão do setup: agrega a evidência JSON
  * (checklist + smoke_test 2xx) com a checagem de artefatos em disco.
  * O projeto só pode virar `verified` quando AMBOS passam; caso contrário,

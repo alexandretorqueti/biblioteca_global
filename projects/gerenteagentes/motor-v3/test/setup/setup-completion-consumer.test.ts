@@ -14,6 +14,7 @@ import {
   setupReconciliationMarker,
 } from '../../src/setup/SetupCompletionConsumer.js'
 import { SetupCompletionSweeper } from '../../src/setup/SetupCompletionSweeper.js'
+import { deriveSetupChecklist } from '../../src/setup/ProjectSetupGate.js'
 import type { TaskEventSink } from '../../src/coordinator/TaskEventRecorder.js'
 
 /**
@@ -53,6 +54,7 @@ interface Recorded {
 interface FakePoolState {
   projectStatus: string
   repoPath: string | null
+  projectLayout?: 'monorepo' | 'standalone' | null
   resultados: Array<string | null>
   sweeperRows: Array<{ id: number; external_id: string }>
   chatAffectedRows: number
@@ -76,7 +78,7 @@ function createFakePool(state: FakePoolState) {
         return [[{ id: 6, setup_status: state.projectStatus }], []]
       }
       if (sql.includes('LEFT JOIN projeto_motor_config') && sql.includes('FROM tarefas t')) {
-        return [[{ id: DB_TASK_ID, external_id: EXTERNAL_ID, repo_path: state.repoPath }], []]
+        return [[{ id: DB_TASK_ID, external_id: EXTERNAL_ID, repo_path: state.repoPath, project_layout: state.projectLayout ?? null }], []]
       }
       if (sql.includes('FROM subtarefas s')) {
         return [state.resultados.map(resultado => ({ resultado })), []]
@@ -540,5 +542,117 @@ describe('parseJsonObjectCandidates — extração tolerante de JSON', () => {
     const texto = '{'.repeat(5000)
     const candidates = parseJsonObjectCandidates(texto)
     expect(candidates).toEqual([])
+  })
+})
+
+describe('checklist derivado do disco — evidência histórica sem checklist (incidente 2026-11-23)', () => {
+  const smokeOnlyEvidence = { smoke_test: validEvidence.smoke_test }
+
+  /** Repo monorepo completo: package.json + config.ts + schema.ts + migrations/ + artefato. */
+  async function makeFullRepo(files: {
+    packageJson?: boolean
+    configTs?: boolean
+    schemaTs?: boolean
+    migrations?: boolean
+    artifact?: boolean
+  } = {}): Promise<string> {
+    const opts = { packageJson: true, configTs: true, schemaTs: true, migrations: true, artifact: true, ...files }
+    const repoRoot = await mkdtemp(join(tmpdir(), 'setup-derived-checklist-'))
+    tempDirs.push(repoRoot)
+    const projectDir = join(repoRoot, 'projects', SLUG)
+    await mkdir(join(projectDir, 'docs'), { recursive: true })
+    if (opts.packageJson) await writeFile(join(projectDir, 'package.json'), '{"name":"x"}')
+    if (opts.configTs) await writeFile(join(projectDir, 'config.ts'), 'export const config = {}')
+    if (opts.schemaTs) await writeFile(join(projectDir, 'schema.ts'), 'export {}')
+    if (opts.migrations) await mkdir(join(projectDir, 'migrations'), { recursive: true })
+    if (opts.artifact) await writeFile(join(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'), '# Contexto\n')
+    return repoRoot
+  }
+
+  it('deriveSetupChecklist — disco completo → todos os itens true; vazio → todos false', async () => {
+    const full = await makeFullRepo()
+    expect(await deriveSetupChecklist(join(full, 'projects', SLUG))).toEqual({
+      structure: true, configSchemaMigrations: true, registries: true, repoPath: true,
+    })
+    const empty = await mkdtemp(join(tmpdir(), 'setup-derived-empty-'))
+    tempDirs.push(empty)
+    expect(await deriveSetupChecklist(empty)).toEqual({
+      structure: false, configSchemaMigrations: false, registries: false, repoPath: true,
+    })
+    expect(await deriveSetupChecklist(join(empty, 'inexistente'))).toEqual({
+      structure: false, configSchemaMigrations: false, registries: false, repoPath: false,
+    })
+  })
+
+  it('evidência histórica (smoke_test válido SEM checklist) + disco completo → verified com checklist derivado e procedência auditável', async () => {
+    const repoRoot = await makeFullRepo()
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [`Resumo do DEV\n${JSON.stringify(smokeOnlyEvidence)}`] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'periodic_sweep', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
+    const evidence = JSON.parse(String(verified[0].params[0]))
+    expect(evidence.checklist).toEqual({ structure: true, configSchemaMigrations: true, registries: true, repoPath: true })
+    expect(evidence.checklist_source).toBe('derived_disk_verification')
+    expect(evidence.smoke_test).toEqual(validEvidence.smoke_test)
+  })
+
+  it('evidência histórica + schema.ts ausente → failed honesto (checklist incompleto: configSchemaMigrations/registries)', async () => {
+    const repoRoot = await makeFullRepo({ schemaTs: false })
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [JSON.stringify(smokeOnlyEvidence)] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'periodic_sweep', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.outcome === 'failed' && result.reasons).toEqual(expect.arrayContaining([
+      'checklist incompleto: configSchemaMigrations',
+      'checklist incompleto: registries',
+    ]))
+  })
+
+  it('evidência histórica + package.json ausente → failed (checklist incompleto: structure)', async () => {
+    const repoRoot = await makeFullRepo({ packageJson: false })
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [JSON.stringify(smokeOnlyEvidence)] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'periodic_sweep', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.outcome === 'failed' && result.reasons).toContain('checklist incompleto: structure')
+  })
+
+  it('sem smoke_test válido NÃO deriva checklist (voz-na-isa: smoke nunca executado → reprovação honesta preservada)', async () => {
+    const repoRoot = await makeFullRepo()
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: ['O DEV disse que o smoke test é escopo da próxima subtarefa. ::DONE::'] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'periodic_sweep', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.outcome === 'failed' && result.reasons.some(r => r.includes('nenhum resultado de subtarefa verified com evidência smoke_test JSON válida'))).toBe(true)
+    expect(fake.updates.some(u => u.sql.includes("setup_status='verified'"))).toBe(false)
+  })
+
+  it('evidência COM checklist do DEV não é substituída pela derivação (autodeclaração continua valendo)', async () => {
+    const repoRoot = await makeFullRepo({ schemaTs: false })
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [JSON.stringify(validEvidence)] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'periodic_sweep', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+    const evidence = JSON.parse(String(fake.updates.filter(u => u.sql.includes("setup_status='verified'"))[0].params[0]))
+    expect(evidence.checklist).toEqual(validEvidence.checklist)
+    expect(evidence.checklist_source).toBeUndefined()
+  })
+
+  it('layout standalone sem checklist NÃO deriva (itens são julgamento do agente) → failed', async () => {
+    const repoRoot = await makeFullRepo()
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, projectLayout: 'standalone', resultados: [JSON.stringify(smokeOnlyEvidence)] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'periodic_sweep', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    // standalone: repoPath vira a RAIZ do repo (sem /projects/<slug>) → artefato ausente + checklist ausente.
+    expect(result.outcome === 'failed' && result.reasons).toContain('checklist ausente')
   })
 })
