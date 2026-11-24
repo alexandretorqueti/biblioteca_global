@@ -31,6 +31,16 @@
  * valor final, consumindo `pontosAnuais`/`pontosMensais` JÁ produzidos pelo
  * useMemo da projeção — o toggle anual/mensal é estado local de visão e
  * apenas troca a série exibida (nenhum recálculo ao alternar).
+ *
+ * Responsividade/acessibilidade (REQ-NF-002, posição 6/9): TextField do
+ * formulário com `fullWidth` (sem largura intrínseca estourando 360px),
+ * paddings adaptativos `p: { xs: 2, sm: 3 }` nos Papers, alvos de toque dos
+ * ToggleButtonGroups elevados a `minHeight: 44` em todos os breakpoints sem
+ * redesenhar (size `small` preservado); `maxWidth: 720` e o layout do
+ * resultado (`direction={{ xs: 'column', sm: 'row' }}`) mantidos. Ordem de
+ * tabulação natural (DOM sem tabIndex positivo); SVG do gráfico já expõe
+ * `role="img"` + `aria-label` (GraficoEvolucao); erros/hints via helperText
+ * do próprio campo.
  */
 import { useEffect, useMemo, useState } from "react"
 import {
@@ -329,7 +339,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
         </Alert>
       )}
 
-      <Paper variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
+      <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 }, borderRadius: 2 }}>
         <Stack spacing={2}>
           <Box>
             <Typography variant="subtitle2" gutterBottom>
@@ -343,6 +353,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
               }}
               aria-label="Tipo de aporte"
               size="small"
+              sx={{ "& .MuiToggleButton-root": { minHeight: 44 } }}
             >
               <ToggleButton value="unico">Depósito único</ToggleButton>
               <ToggleButton value="mensal">Aportes mensais</ToggleButton>
@@ -356,6 +367,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
               onChange={(evento) => setValorInicialTexto(evento.target.value)}
               inputMode="decimal"
               size="small"
+              fullWidth
               error={valorInvalido}
               helperText={valorInvalido ? "Informe um valor ≥ 0" : undefined}
             />
@@ -366,6 +378,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
               onChange={(evento) => setAporteMensalTexto(evento.target.value)}
               inputMode="decimal"
               size="small"
+              fullWidth
               error={valorInvalido}
               helperText={valorInvalido ? "Informe um valor ≥ 0" : undefined}
             />
@@ -395,6 +408,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
             onChange={(evento) => setTaxaManualTexto(evento.target.value)}
             inputMode="decimal"
             size="small"
+            fullWidth
             error={taxaManualInvalida}
             helperText={
               taxaManualInvalida
@@ -409,6 +423,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
             onChange={(evento) => setPrazoTexto(evento.target.value)}
             inputMode="numeric"
             size="small"
+            fullWidth
             sx={{ maxWidth: 220 }}
             error={prazoInvalido}
             helperText={prazoInvalido ? "Informe um inteiro ≥ 1" : undefined}
@@ -446,7 +461,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
 
       <Paper
         variant="outlined"
-        sx={{ p: 3, borderRadius: 2 }}
+        sx={{ p: { xs: 2, sm: 3 }, borderRadius: 2 }}
         data-testid="resultado-simulacao"
       >
         <Stack direction={{ xs: "column", sm: "row" }} spacing={3}>
@@ -477,7 +492,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
       {projecao && (
         <Paper
           variant="outlined"
-          sx={{ p: 3, borderRadius: 2, maxWidth: "100%", overflow: "hidden" }}
+          sx={{ p: { xs: 2, sm: 3 }, borderRadius: 2, maxWidth: "100%", overflow: "hidden" }}
           data-testid="painel-grafico"
         >
           <Stack spacing={1.5}>
@@ -499,6 +514,7 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
                 }}
                 aria-label="Alternância anual/mensal do gráfico"
                 size="small"
+                sx={{ "& .MuiToggleButton-root": { minHeight: 44 } }}
               >
                 <ToggleButton value="anual">Ano a ano</ToggleButton>
                 <ToggleButton value="mensal">Mês a mês</ToggleButton>
