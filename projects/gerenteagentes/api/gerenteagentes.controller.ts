@@ -460,6 +460,13 @@ export class GerenteAgentesController {
     return this.service.listarDuracoesTarefa(projeto, id);
   }
 
+  /** Relatório Médias Modelos: duração média por modelo com detecção de desvios. */
+  @Get('relatorios/medias-modelos')
+  @Roles('admin', 'gerente', 'operador')
+  listarMediasModelos(@CurrentProject() projeto: ProjetoResumo) {
+    return this.service.listarMediasModelos(projeto);
+  }
+
   // ============================================================================
   // AGENTES (sincronização com OpenClaw)
   // ============================================================================

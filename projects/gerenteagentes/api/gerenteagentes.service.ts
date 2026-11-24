@@ -80,6 +80,7 @@ import {
   subtractIntervals,
   type IntervaloDuracao,
 } from './tarefa-duracoes';
+import { calcularEstatisticasModelo } from './relatorios-medias-modelos';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -1612,6 +1613,78 @@ export class GerenteAgentesService {
     const db = await this.dbDoMotor();
     const rows = await db.select().from(tarefaEventos).where(eq(tarefaEventos.tarefaId, tarefaId)).orderBy(desc(tarefaEventos.createdAt));
     return rows;
+  }
+
+  /**
+   * Relatório Médias Modelos (tarefa 1100): estatísticas de duração por modelo
+   * a partir de subtarefas 'verified', associadas à sessão de desenvolvimento
+   * que as concluiu. A média exclui outliers (> 2x a média simples); a flag e o
+   * maior desvio informam as execuções excluídas. O cálculo estatístico vive em
+   * função pura (`relatorios-medias-modelos.ts`) com teste unitário próprio.
+   */
+  async listarMediasModelos(_projeto: ProjetoResumo) {
+    const db = await this.dbDoMotor();
+    const [resultado] = await db.execute(sql`
+      SELECT s.modelo AS modelo,
+             s.subtarefa_id AS subtarefaId,
+             s.closed_at AS sessaoFechadaEm,
+             COALESCE(st.duracao_segundos,
+                      TIMESTAMPDIFF(SECOND, st.iniciada_em, st.finalizada_em)) AS duracaoSegundos,
+             st.finalizada_em AS finalizadaEm
+        FROM subtarefas st
+        JOIN motor_agent_sessions s
+          ON s.subtarefa_id = st.id AND s.purpose = 'development'
+       WHERE st.status = 'verified'
+         AND (st.duracao_segundos IS NOT NULL
+              OR (st.iniciada_em IS NOT NULL AND st.finalizada_em IS NOT NULL))
+       ORDER BY s.subtarefa_id, s.closed_at DESC, s.id DESC
+    `);
+    const rows = resultado as unknown as Array<{
+      modelo: string | null;
+      subtarefaId: number;
+      sessaoFechadaEm: string | number | Date | null;
+      duracaoSegundos: number | string | null;
+      finalizadaEm: string | number | Date | null;
+    }>;
+
+    // Quando há mais de uma sessão de desenvolvimento para a subtarefa, usa a
+    // sessão fechada mais recente anterior/equivalente à finalização; sem
+    // nenhuma sessão nesse recorte, usa a sessão fechada mais recente de todas.
+    type Candidata = (typeof rows)[number];
+    const porSubtarefa = new Map<number, Candidata[]>();
+    for (const row of rows) {
+      if (!row.modelo) continue;
+      const lista = porSubtarefa.get(row.subtarefaId) ?? [];
+      lista.push(row);
+      porSubtarefa.set(row.subtarefaId, lista);
+    }
+    const momento = (value: string | number | Date | null): number | undefined =>
+      value == null ? undefined : new Date(value).getTime();
+    const duracoesPorModelo = new Map<string, number[]>();
+    for (const [, candidatas] of porSubtarefa) {
+      const primeira = candidatas[0];
+      if (!primeira) continue;
+      const finalizadaEmMs = momento(primeira.finalizadaEm);
+      const fechadas = candidatas.filter((c) => c.sessaoFechadaEm != null);
+      const anterior = fechadas.find((c) => {
+        const fechadaMs = momento(c.sessaoFechadaEm) ?? 0;
+        return finalizadaEmMs == null || fechadaMs <= finalizadaEmMs;
+      });
+      const escolhida = anterior ?? fechadas[0] ?? primeira;
+      const duracao = Number(escolhida.duracaoSegundos);
+      if (!Number.isFinite(duracao) || duracao <= 0 || !escolhida.modelo) continue;
+      const lista = duracoesPorModelo.get(escolhida.modelo) ?? [];
+      lista.push(duracao);
+      duracoesPorModelo.set(escolhida.modelo, lista);
+    }
+
+    const itens = [...duracoesPorModelo.entries()]
+      .map(([modelo, duracoes]) => ({
+        modelo,
+        ...calcularEstatisticasModelo(duracoes),
+      }))
+      .sort((a, b) => a.modelo.localeCompare(b.modelo));
+    return { itens };
   }
 
   /** Agregação somente leitura das durações observadas pelo Motor. */
