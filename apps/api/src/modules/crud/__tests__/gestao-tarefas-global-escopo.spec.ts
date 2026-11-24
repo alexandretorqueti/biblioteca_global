@@ -207,6 +207,109 @@ describe("GestaoTarefasGlobalEscopo — operacaoBloqueada e pivôs", () => {
   })
 })
 
+describe("GestaoTarefasGlobalEscopo — campos sensíveis por perfil (REQ-F-017)", () => {
+  function ctxPerfil(perfil: string): ContextoEscopoCrud {
+    return { organizacaoId: 10, colaboradorId: 7, perfil }
+  }
+
+  it("leitura: operador/visualizador têm cpf/telefone/email removidos na tabela colaboradores", () => {
+    for (const perfil of ["operador", "visualizador"]) {
+      const campos = extensao.camposSensiveisNaLeitura!("colaboradores", tabelas.colaboradores!, ctxPerfil(perfil))
+      expect(campos.sort()).toEqual(["cpf", "email", "telefone"])
+    }
+  })
+
+  it("leitura: admin/gerente não removem nada", () => {
+    for (const perfil of ["admin", "gerente"]) {
+      expect(extensao.camposSensiveisNaLeitura!("colaboradores", tabelas.colaboradores!, ctxPerfil(perfil))).toEqual([])
+    }
+  })
+
+  it("leitura: tabelas sem os campos não produzem remoção (nem para operador)", () => {
+    for (const recurso of ["areas", "tags", "tarefas", "organizacoes"]) {
+      expect(extensao.camposSensiveisNaLeitura!(recurso, tabelas[recurso]!, ctxPerfil("operador"))).toEqual([])
+    }
+  })
+
+  it("escrita: operador/visualizador são rejeitados ao enviar cpf/telefone/email", () => {
+    for (const perfil of ["operador", "visualizador"]) {
+      for (const operacao of ["create", "update"] as const) {
+        expect(() =>
+          extensao.rejeitarEscritaDeCamposSensiveis!(
+            tabelas.colaboradores!,
+            { nome: "Fulano", cpf: "123.456.789-00" },
+            ctxPerfil(perfil),
+            operacao,
+          ),
+        ).toThrow(BadRequestException)
+        expect(() =>
+          extensao.rejeitarEscritaDeCamposSensiveis!(
+            tabelas.colaboradores!,
+            { telefone: "11 99999-0000", email: "x@y.com" },
+            ctxPerfil(perfil),
+            operacao,
+          ),
+        ).toThrow(/telefone, email/)
+      }
+    }
+  })
+
+  it("escrita: mensagem de erro cita os campos e o perfil", () => {
+    expect(() =>
+      extensao.rejeitarEscritaDeCamposSensiveis!(
+        tabelas.colaboradores!,
+        { cpf: "123.456.789-00" },
+        ctxPerfil("operador"),
+        "create",
+      ),
+    ).toThrow(/cpf[\s\S]*operador/)
+  })
+
+  it("escrita: ausência de campo sensível é neutra (update parcial do perfil)", () => {
+    expect(() =>
+      extensao.rejeitarEscritaDeCamposSensiveis!(
+        tabelas.colaboradores!,
+        { nome: "Só o nome" },
+        ctxPerfil("visualizador"),
+        "update",
+      ),
+    ).not.toThrow()
+    // null explícito ainda é "enviar o campo" → rejeitado (não permite limpar por bypass)
+    expect(() =>
+      extensao.rejeitarEscritaDeCamposSensiveis!(
+        tabelas.colaboradores!,
+        { cpf: null },
+        ctxPerfil("visualizador"),
+        "update",
+      ),
+    ).toThrow(BadRequestException)
+  })
+
+  it("escrita: admin/gerente gravam livremente", () => {
+    for (const perfil of ["admin", "gerente"]) {
+      expect(() =>
+        extensao.rejeitarEscritaDeCamposSensiveis!(
+          tabelas.colaboradores!,
+          { nome: "Fulano", cpf: "123.456.789-00", telefone: "11 99999-0000", email: "x@y.com" },
+          ctxPerfil(perfil),
+          "create",
+        ),
+      ).not.toThrow()
+    }
+  })
+
+  it("escrita: table sem os campos nunca é afetada", () => {
+    expect(() =>
+      extensao.rejeitarEscritaDeCamposSensiveis!(
+        tabelas.tarefas!,
+        { titulo: "t", email: "naoexiste@coluna.org" },
+        ctxPerfil("operador"),
+        "create",
+      ),
+    ).not.toThrow()
+  })
+})
+
 describe("CrudService — wiring da extensão de escopo (sem DB)", () => {
   const projetoGestao = { id: 8496, nome: "Gestão", slug: SLUG_GESTAO_TAREFAS_GLOBAL, perfil: "admin" as const }
   const projetoOutro = { id: 640, nome: "Gerente", slug: "gerenteagentes", perfil: "admin" as const }

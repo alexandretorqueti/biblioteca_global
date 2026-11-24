@@ -15,6 +15,12 @@
  * - Criação/remoção de organizações é vetada a colaboradores (403): o ciclo
  *   de vida das organizações pertence aos endpoints de administração da
  *   plataforma (subtarefa 3).
+ * - Dados sensíveis de colaboradores (`cpf`, `telefone`, `email` — REQ-F-017,
+ *   clarificação 8): perfis operador/visualizador NÃO recebem esses campos em
+ *   nenhuma resposta (leitura remove as chaves na serialização) e NÃO os
+ *   gravam (create/update rejeitados com 400 claro); admin/gerente leem e
+ *   gravam normalmente. A barreira é o backend — independentemente de
+ *   hiddenColumns/roleFilter do front.
  *
  * Registrada em crud.module no token CRUD_ESCOPO_EXTENSIONS — o CrudService
  * só a consulta quando o slug da sessão é `gestao-de-tarefas-global`; o
@@ -48,6 +54,20 @@ const COLUNA_ORGANIZACAO = "organizacao_id"
 
 /** Propriedade Drizzle da coluna de organização (schema do projeto). */
 const PROP_ORGANIZACAO = "organizacaoId"
+
+/**
+ * Campos sensíveis de contato/identidade de colaboradores (REQ-F-017):
+ * nomes de coluna = nomes de propriedade do schema (sem divergência de caso).
+ */
+const CAMPOS_SENSIVEIS = ["cpf", "telefone", "email"] as const
+
+/** Perfis SEM acesso a dados sensíveis (admin/gerente têm acesso total). */
+const PERFIS_SEM_SENSIVEIS = new Set(["operador", "visualizador"])
+
+/** Nomes de coluna da tabela (a barreira de campo é genérica por tabela). */
+function nomesDeColunas(tabela: MySqlTable): Set<string> {
+  return new Set(Object.values(colunas(tabela)).map((c) => c.name))
+}
 
 function colunas(tabela: MySqlTable): Record<string, Column> {
   return getTableColumns(tabela) as Record<string, Column>
@@ -215,6 +235,46 @@ export class GestaoTarefasGlobalEscopo implements ExtensaoEscopoCrud {
     const org = colunaOrganizacao(campo.tabelaOposta)
     if (!org) return undefined
     return eq(org as never, ctx.organizacaoId as never)
+  }
+
+  /**
+   * Barreira de LEITURA: operador/visualizador não recebem `cpf`, `telefone`
+   * nem `email` em nenhuma resposta do CRUD (as chaves saem removidas da
+   * linha serializada pelo CrudService). Admin/gerente: lista vazia —
+   * comportamento normal de leitura.
+   */
+  camposSensiveisNaLeitura(
+    resource: string,
+    tabela: MySqlTable,
+    ctx: ContextoEscopoCrud,
+  ): string[] {
+    void resource
+    if (!PERFIS_SEM_SENSIVEIS.has(ctx.perfil)) return []
+    const nomes = nomesDeColunas(tabela)
+    return CAMPOS_SENSIVEIS.filter((campo) => nomes.has(campo))
+  }
+
+  /**
+   * Barreira de ESCRITA: operador/visualizador não gravam `cpf`, `telefone`
+   * nem `email` (create/update) — 400 claro nomeando os campos. A ausência do
+   * campo no body é neutra (update parcial continua permitido ao perfil).
+   */
+  rejeitarEscritaDeCamposSensiveis(
+    tabela: MySqlTable,
+    corpo: Record<string, unknown>,
+    ctx: ContextoEscopoCrud,
+    operacao: "create" | "update",
+  ): void {
+    if (!PERFIS_SEM_SENSIVEIS.has(ctx.perfil)) return
+    const nomes = nomesDeColunas(tabela)
+    const enviados = CAMPOS_SENSIVEIS.filter(
+      (campo) => nomes.has(campo) && campo in corpo,
+    )
+    if (enviados.length === 0) return
+    throw new BadRequestException(
+      `Dados sensíveis de colaboradores (${enviados.join(", ")}) são visíveis e graváveis apenas por admin e gerente — ` +
+        `o perfil "${ctx.perfil}" não pode ${operacao === "create" ? "cadastrar" : "alterar"} esses campos.`,
+    )
   }
 }
 

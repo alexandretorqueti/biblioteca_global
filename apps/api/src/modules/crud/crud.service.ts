@@ -510,7 +510,7 @@ export class CrudService {
         itemsNormalizados,
       )
       return {
-        items: itemsComPivots,
+        items: this.ocultarCamposSensiveis(escopo, resource, tabela, itemsComPivots),
         total: Number(total.at(0)?.quantidade ?? 0),
         page,
         pageSize,
@@ -553,7 +553,33 @@ export class CrudService {
       resource === "tarefas" && this.ehTarefasDoMotor(tabela)
         ? (await this.anexarDependencias(db, [resultado]))[0]!
         : resultado
-    return (await this.anexarPivots(db, projeto, resource, [base]))[0]!
+    const comPivots = (await this.anexarPivots(db, projeto, resource, [base]))[0]!
+    return this.ocultarCamposSensiveis(escopo, resource, tabela, [comPivots])[0]!
+  }
+
+  /**
+   * Barreira de leitura por perfil (regra de campo da extensão de escopo):
+   * remove da linha serializada os campos que o perfil da sessão não pode
+   * ver (ex.: cpf/telefone/email de colaboradores para operador/visualizador
+   * no gestao-de-tarefas-global). Sem extensão/regra → linhas intactas.
+   * Aplicado em listar/detalhar (e, por consequência, nas respostas de
+   * criar/atualizar que releem via detalhar).
+   */
+  private ocultarCamposSensiveis(
+    escopo: { extensao: ExtensaoEscopoCrud; ctx: ContextoEscopoCrud } | undefined,
+    resource: string,
+    tabela: MySqlTable,
+    linhas: Record<string, unknown>[],
+  ): Record<string, unknown>[] {
+    const campos = escopo?.extensao.camposSensiveisNaLeitura?.(resource, tabela, escopo.ctx)
+    if (!campos || campos.length === 0) return linhas
+    return linhas.map((linha) => {
+      const tem = campos.some((campo) => campo in linha)
+      if (!tem) return linha
+      const saida = { ...linha }
+      for (const campo of campos) delete saida[campo]
+      return saida
+    })
   }
 
   /**
@@ -996,6 +1022,14 @@ export class CrudService {
       !Array.isArray(corpoNormalizado)
     ) {
       escopo.extensao.prepararCorpo(tabela, corpoNormalizado, escopo.ctx, "create")
+      // Barreira de escrita por perfil: campos sensíveis não podem ser
+      // enviados por quem não tem acesso (400 claro, antes do Zod).
+      escopo.extensao.rejeitarEscritaDeCamposSensiveis?.(
+        tabela,
+        corpoNormalizado,
+        escopo.ctx,
+        "create",
+      )
     }
     const parse = insert.safeParse(corpoNormalizado)
     if (!parse.success) {
@@ -1114,6 +1148,14 @@ export class CrudService {
       !Array.isArray(corpoNormalizado)
     ) {
       escopo.extensao.prepararCorpo(tabela, corpoNormalizado, escopo.ctx, "update")
+      // Barreira de escrita por perfil: campos sensíveis não podem ser
+      // alterados por quem não tem acesso (400 claro, antes do Zod).
+      escopo.extensao.rejeitarEscritaDeCamposSensiveis?.(
+        tabela,
+        corpoNormalizado,
+        escopo.ctx,
+        "update",
+      )
     }
     const parse = update.safeParse(corpoNormalizado)
     if (!parse.success) {

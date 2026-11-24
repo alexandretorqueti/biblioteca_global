@@ -93,6 +93,31 @@ export interface ExtensaoEscopoCrud {
     campo: CampoPivot,
     ctx: ContextoEscopoCrud,
   ): SQL | undefined
+
+  /**
+   * Campos sensíveis a REMOVER da resposta (barreira de leitura por perfil).
+   * Retorna as chaves da linha serializada (props do schema Drizzle) que não
+   * podem ser entregues ao perfil da sessão. undefined/vazio = nada a ocultar.
+   * Opcional: extensões sem regra de campo não alteram a resposta.
+   */
+  camposSensiveisNaLeitura?(
+    resource: string,
+    tabela: MySqlTable,
+    ctx: ContextoEscopoCrud,
+  ): string[]
+
+  /**
+   * Rejeição de campos sensíveis no corpo de escrita ANTES do Zod
+   * (chaves snake_case = nome de coluna). Deve lançar `BadRequestException`
+   * com erro claro quando o perfil da sessão não pode gravar esses campos.
+   * Opcional: extensões sem regra de campo não validam nada.
+   */
+  rejeitarEscritaDeCamposSensiveis?(
+    tabela: MySqlTable,
+    corpo: Record<string, unknown>,
+    ctx: ContextoEscopoCrud,
+    operacao: "create" | "update",
+  ): void
 }
 
 /** Token DI da lista de extensões registradas (crud.module). */
