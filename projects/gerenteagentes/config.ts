@@ -445,6 +445,19 @@ export const config: GeradorSistemaConfig = {
       ],
     },
     {
+      id: "relatorios",
+      label: "Relatórios",
+      items: [
+        {
+          id: "relatorio-medias-modelos-view",
+          label: "Médias de Modelos",
+          path: "relatorios/medias-modelos",
+          icon: "insights",
+          screen: { kind: "custom", componentId: "gerenteagentes-relatorios-modelos" },
+        },
+      ],
+    },
+    {
       id: "configuracoes",
       label: "CONFIGURAÇÕES",
       items: [
