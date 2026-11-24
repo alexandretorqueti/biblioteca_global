@@ -440,9 +440,9 @@ export class MigrationDryRunExecutor {
 
   /**
    * Extrai nomes de tabelas referenciadas nos statements.
-   * Detecta CREATE TABLE, ALTER TABLE, INSERT INTO, UPDATE, DELETE FROM,
-   * FROM e JOIN (tabelas lidas por UPDATE/INSERT ... SELECT também precisam
-   * ser clonadas e reescritas para o dry-run não tocar tabelas reais).
+   * Detecta CREATE TABLE, ALTER TABLE, CREATE/DROP INDEX ... ON, INSERT INTO,
+   * UPDATE, DELETE FROM, FROM e JOIN (tabelas lidas por UPDATE/INSERT ... SELECT
+   * também precisam ser clonadas e reescritas para o dry-run não tocar tabelas reais).
    */
   private extractTableNames(statements: string[]): Set<string> {
     const tables = new Set<string>()
@@ -463,6 +463,14 @@ export class MigrationDryRunExecutor {
     const patterns = [
       /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?(?![\w.`])/gi,
       /ALTER\s+TABLE\s+`?(\w+)`?(?![\w.`])/gi,
+      // CREATE/DROP INDEX ... ON `tabela`: o nome da tabela só aparece após ON
+      // e nenhum outro padrão a capturava. Sem a extração o statement não era
+      // clonado nem reescrito e o dry-run executava o DDL na tabela REAL do
+      // projeto — incidente tarefa 1063/b3538 (macro-gestao-de-tarefas-global-2,
+      // migration 0001): o primeiro job pre_deploy criou o índice no banco real
+      // e o segundo falhou com errno 1061 (Duplicate key name).
+      /CREATE\s+(?:UNIQUE\s+|FULLTEXT\s+|SPATIAL\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?`?\w+`?\s+ON\s+`?(\w+)`?(?![\w.`])/gi,
+      /DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?`?\w+`?\s+ON\s+`?(\w+)`?(?![\w.`])/gi,
       // Modificadores (IGNORE/LOW_PRIORITY/...) entre INSERT e INTO não podem
       // impedir a captura: sem ela a tabela não era reescrita e o dry-run
       // escrevia na tabela REAL do projeto (INSERT IGNORE INTO
