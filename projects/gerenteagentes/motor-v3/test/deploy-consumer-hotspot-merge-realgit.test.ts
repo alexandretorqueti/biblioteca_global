@@ -60,18 +60,22 @@ const BASE_API_CLIENT = [
   '',
 ].join('\n')
 
-function memberAppModule(aImport: string, bImport: string, aModule: string, bModule: string): string {
+/**
+ * Versão do hotspot para UM membro: insere o import e a entrada do próprio
+ * módulo no mesmo âncora da base. Membros diferentes inserem linhas
+ * DIFERENTES no mesmo ponto — é isso que produz o conflito real (adições
+ * idênticas dos dois lados são mescladas limpas pelo git e NÃO conflitam).
+ */
+function memberAppModule(importLine: string, moduleName: string): string {
   return [
     "import { Module } from '@nestjs/common'",
     "import { CoreModule } from './core/core.module'",
-    aImport,
-    bImport,
+    importLine,
     '',
     '@Module({',
     '  imports: [',
     '    CoreModule,',
-    `    ${aModule},`,
-    `    ${bModule},`,
+    `    ${moduleName},`,
     '  ],',
     '})',
     'export class AppModule {}',
@@ -79,49 +83,43 @@ function memberAppModule(aImport: string, bImport: string, aModule: string, bMod
   ].join('\n')
 }
 
-function memberRegistry(aLine: string, bLine: string): string {
+function memberRegistry(importLine: string, entry: string): string {
   return [
     "import { homeScreen } from './screens/home'",
-    aLine,
-    bLine,
+    importLine,
     '',
     'export const screens = [',
     '  homeScreen,',
-    '  \"a-screen\",',
-    '  \"b-screen\",',
+    `  ${entry},`,
     ']',
     '',
   ].join('\n')
 }
 
-function memberApiClient(aLine: string, bLine: string): string {
+function memberApiClient(exportLine: string, entry: string): string {
   return [
     "export { createClient } from './client'",
-    aLine,
-    bLine,
+    exportLine,
     '',
     'export const resources = [',
     '  \"usuarios\",',
-    '  \"a-recurso\",',
-    '  \"b-recurso\",',
+    `  ${entry},`,
     ']',
     '',
   ].join('\n')
 }
 
 /** Conflito NÃO-aditivo no mesmo hotspot: membro A também edita a linha existente `CoreModule,`. */
-function memberAppModuleNonAdditive(aImport: string, bImport: string, aModule: string, bModule: string): string {
+function memberAppModuleNonAdditive(importLine: string, moduleName: string): string {
   return [
     "import { Module } from '@nestjs/common'",
     "import { CoreModule } from './core/core.module'",
-    aImport,
-    bImport,
+    importLine,
     '',
     '@Module({',
     '  imports: [',
     '    CoreModule, // renomeado pelo membro A',
-    `    ${aModule},`,
-    `    ${bModule},`,
+    `    ${moduleName},`,
     '  ],',
     '})',
     'export class AppModule {}',
@@ -152,7 +150,9 @@ interface FixtureOptions {
   appModuleMemberA?: string
   appModuleMemberB?: string
   registryMemberA?: string
+  registryMemberB?: string
   apiClientMemberA?: string
+  apiClientMemberB?: string
   genericMemberA?: string
   genericMemberB?: string
 }
@@ -181,6 +181,19 @@ async function buildFixture(options: FixtureOptions): Promise<{ repo: string; re
   if (options.conflictFiles.includes(API_CLIENT)) await write(API_CLIENT, BASE_API_CLIENT)
   if (options.conflictFiles.includes(OUT_OF_HOTSPOT)) await write(OUT_OF_HOTSPOT, 'export const shared = [\n  1,\n]\n')
   await write('README.md', '# fixture\n')
+  // O composeBatch roda `npm ci` no worktree composto (fix 4f498571/5b5cc3ed).
+  // A fixture precisa de package.json + package-lock.json (sem dependências,
+  // instala offline) e de .gitignore para o node_modules não sujar o
+  // `git status --porcelain` verificado nos testes.
+  await write('package.json', `${JSON.stringify({ name: 'fixture', version: '1.0.0' }, null, 2)}\n`)
+  await write('package-lock.json', `${JSON.stringify({
+    name: 'fixture',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    requires: true,
+    packages: { '': { name: 'fixture', version: '1.0.0' } },
+  }, null, 2)}\n`)
+  await write('.gitignore', 'node_modules/\n')
   git(['add', '-A'], repo)
   git(['commit', '-m', 'merge-base'], repo)
   const mergeBase = git(['rev-parse', 'HEAD'], repo).trim()
@@ -196,9 +209,13 @@ async function buildFixture(options: FixtureOptions): Promise<{ repo: string; re
   git(['commit', '-m', 'membro A: registra suas entradas'], repo)
   const memberASha = git(['rev-parse', 'HEAD'], repo).trim()
 
-  // Membro B: deriva da base e adiciona nos MESMOS pontos.
+  // Membro B: deriva da base e adiciona entradas PRÓPRIAS (diferentes das de A)
+  // nos MESMOS pontos de registro — é a colisão aditiva real que o merge
+  // determinístico resolve.
   git(['checkout', '-b', 'member-b', mergeBase], repo)
-  if (options.appModuleMemberB) await write(APP_MODULE, options.appModuleMemberB ?? options.appModuleMemberA!)
+  if (options.appModuleMemberB) await write(APP_MODULE, options.appModuleMemberB)
+  if (options.registryMemberB) await write(REGISTRY, options.registryMemberB)
+  if (options.apiClientMemberB) await write(API_CLIENT, options.apiClientMemberB)
   if (options.genericMemberB) await write(OUT_OF_HOTSPOT, options.genericMemberB)
   await write('member-b.ts', 'export const b = 2\n')
   git(['add', '-A'], repo)
@@ -244,8 +261,8 @@ describe('DeployConsumer.composeBatch — fusão determinística de hotspots adi
   it('fixture produz o conflito real esperado (sanidade: ambos os picks colidem no mesmo arquivo)', async () => {
     const { repo, requestedCommitA, requestedCommitB } = await buildFixture({
       conflictFiles: [APP_MODULE],
-      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", "import { BillingModule } from './billing/billing.module'"),
-      appModuleMemberB: memberAppModule("import { AuthModule } from './auth/auth.module'", "import { BillingModule } from './billing/billing.module'"),
+      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", 'AuthModule'),
+      appModuleMemberB: memberAppModule("import { BillingModule } from './billing/billing.module'", 'BillingModule'),
     })
     // Sanidade do fixture: cherry-pick manual de A sobre a base aplica limpo e o de B
     // conflita SOMENTE no hotspot (padrão confirmado na investigação de 27/10).
@@ -261,13 +278,16 @@ describe('DeployConsumer.composeBatch — fusão determinística de hotspots adi
   it('flag ON: conflito puramente aditivo em hotspots → composição succeeds sem isolamento e com auditoria', async () => {
     const { repo, requestedCommitA, requestedCommitB } = await buildFixture({
       conflictFiles: [APP_MODULE, REGISTRY, API_CLIENT],
-      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", "import { BillingModule } from './billing/billing.module'"),
-      registryMemberA: memberRegistry("import { cadastroScreen } from './screens/cadastro'", "import { financeiroScreen } from './screens/financeiro'"),
-      apiClientMemberA: memberApiClient("export { authClient } from './auth'", "export { billingClient } from './billing'"),
+      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", 'AuthModule'),
+      appModuleMemberB: memberAppModule("import { BillingModule } from './billing/billing.module'", 'BillingModule'),
+      registryMemberA: memberRegistry("import { cadastroScreen } from './screens/cadastro'", 'cadastroScreen'),
+      registryMemberB: memberRegistry("import { financeiroScreen } from './screens/financeiro'", 'financeiroScreen'),
+      apiClientMemberA: memberApiClient("export { authClient } from './auth'", '\"auth-recurso\"'),
+      apiClientMemberB: memberApiClient("export { billingClient } from './billing'", '\"billing-recurso\"'),
     })
     const { events, sink } = taskEventsMock()
     const consumer = new DeployConsumer(repositoryMock(true, SEED_HOTSPOTS) as never, {} as never, {} as never,
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, sink)
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, sink)
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     try {
       const result = await composeWith(consumer, repo, 'batch-hotspot-on', requestedCommitA, requestedCommitB)
@@ -322,7 +342,8 @@ describe('DeployConsumer.composeBatch — fusão determinística de hotspots adi
   it('flag ON: duas execuções independentes produzem o MESMO composto (determinismo)', async () => {
     const build = () => buildFixture({
       conflictFiles: [APP_MODULE],
-      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", "import { BillingModule } from './billing/billing.module'"),
+      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", 'AuthModule'),
+      appModuleMemberB: memberAppModule("import { BillingModule } from './billing/billing.module'", 'BillingModule'),
     })
     const composeOnce = async (batchId: string) => {
       const { repo, requestedCommitA, requestedCommitB } = await build()
@@ -349,11 +370,12 @@ describe('DeployConsumer.composeBatch — fusão determinística de hotspots adi
   it('flag OFF (padrão): paridade exata — membro isolado com o mesmo conteúdo de conflicts de hoje e zero auditoria', async () => {
     const { repo, requestedCommitA, requestedCommitB } = await buildFixture({
       conflictFiles: [APP_MODULE],
-      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", "import { BillingModule } from './billing/billing.module'"),
+      appModuleMemberA: memberAppModule("import { AuthModule } from './auth/auth.module'", 'AuthModule'),
+      appModuleMemberB: memberAppModule("import { BillingModule } from './billing/billing.module'", 'BillingModule'),
     })
     const { events, sink } = taskEventsMock()
     const consumer = new DeployConsumer(repositoryMock(false, SEED_HOTSPOTS) as never, {} as never, {} as never,
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, sink)
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, sink)
     const result = await composeWith(consumer, repo, 'batch-hotspot-off', requestedCommitA, requestedCommitB)
 
     // Comportamento vigente: exatamente um membro isolado (o segundo a conflitar).
@@ -361,12 +383,20 @@ describe('DeployConsumer.composeBatch — fusão determinística de hotspots adi
     expect(result.conflicts[0]!.taskId).toBe('task-b')
     expect(result.conflicts[0]!.index).toBe(1)
     expect(result.conflicts[0]!.conflictFiles).toEqual([APP_MODULE])
-    expect(result.conflicts[0]!.conflictExcerpt).toContain('CONFLICT')
-    // O primeiro membro seguiu: merge-base do isolado é o HEAD composto (contém A).
-    const mergeBase = git(['merge-base', 'HEAD', String(result.conflicts[0]!.taskCommit)], result.path).trim()
+    // Paridade com o comportamento real de hoje: o excerpt vem do error.message
+    // do execFile (stderr do git); a linha "CONFLICT (content)" vai para o
+    // STDOUT do cherry-pick e não compõe o excerpt.
+    expect(result.conflicts[0]!.conflictExcerpt).toContain('could not apply')
+    // O primeiro membro seguiu: o HEAD composto contém o commit de A e NÃO o
+    // de B (o isolado continua derivando do merge-base original — merge-base
+    // entre HEAD e taskCommit jamais seria o próprio HEAD).
+    const composedLog = git(['log', '--format=%s'], result.path)
+    expect(composedLog).toContain('membro A: registra suas entradas')
+    expect(composedLog).not.toContain('membro B: registra suas entradas')
+    expect(git(['merge-base', 'HEAD', String(result.conflicts[0]!.taskCommit)], result.path).trim())
+      .not.toBe(git(['rev-parse', 'HEAD'], result.path).trim())
     const { readFileSync } = await import('node:fs')
     expect(readFileSync(join(result.path, APP_MODULE), 'utf8')).toContain("import { AuthModule } from './auth/auth.module'")
-    expect(mergeBase).toBe(git(['rev-parse', 'HEAD'], result.path).trim())
     // Nenhum evento de auditoria de fusão com a flag desligada.
     expect(events.filter(event => event.event === 'hotspot_merged_deterministic')).toEqual([])
 
@@ -378,7 +408,8 @@ describe('DeployConsumer.composeBatch — fusão determinística de hotspots adi
     const { repo, requestedCommitA, requestedCommitB } = await buildFixture({
       conflictFiles: [APP_MODULE],
       // A edição de `CoreModule,` (linha existente) torna o lado A não-aditivo.
-      appModuleMemberA: memberAppModuleNonAdditive("import { AuthModule } from './auth/auth.module'", "import { BillingModule } from './billing/billing.module'"),
+      appModuleMemberA: memberAppModuleNonAdditive("import { AuthModule } from './auth/auth.module'", 'AuthModule'),
+      appModuleMemberB: memberAppModule("import { BillingModule } from './billing/billing.module'", 'BillingModule'),
     })
     const consumer = new DeployConsumer(repositoryMock(true, SEED_HOTSPOTS) as never, {} as never, {} as never)
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)

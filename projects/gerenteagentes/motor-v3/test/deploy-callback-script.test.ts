@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -7,6 +7,19 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+
+// A lib usa `curl` por contrato. O gate de testes herda o env do container do
+// motor, que pode não ter curl instalado — nesse caso os testes HTTP são
+// pulados (skip explícito, nunca falha espúria). Testes que não fazem HTTP
+// continuam rodando em qualquer ambiente.
+const hasCurl = (() => {
+  try {
+    execFileSync('curl', ['--version'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+})()
 
 // Resolve a partir da localização deste teste (motor-v3/test) — não do cwd,
 // que varia conforme o workspace onde o vitest é invocado.
@@ -84,7 +97,7 @@ describe('retry dual-porta do callback (lib deploy-callback.sh)', () => {
     expect(main).toMatch(/notify_deploy_result "\$status" "\$callback_port" \|\|/)
   })
 
-  it('líder alternou: porta preferida em 503 → round visita a segunda e é aceito', async () => {
+  it.skipIf(!hasCurl)('líder alternou: porta preferida em 503 → round visita a segunda e é aceito', async () => {
     const down: StubState = { calls: [], healthy: new Set() }
     const up: StubState = { calls: [], healthy: new Set() }
     const sDown = await startStub(down)
@@ -103,7 +116,7 @@ describe('retry dual-porta do callback (lib deploy-callback.sh)', () => {
     expect(up.calls[0]).toMatchObject({ port: pUp, auth: 'sekret', body: '{"status":"success"}' })
   })
 
-  it('503 em ambas → rounds inteiros (503 é retryable) e desfecho best-effort limitado', async () => {
+  it.skipIf(!hasCurl)('503 em ambas → rounds inteiros (503 é retryable) e desfecho best-effort limitado', async () => {
     const a: StubState = { calls: [], healthy: new Set() }
     const b: StubState = { calls: [], healthy: new Set() }
     const sA = await startStub(a)
@@ -121,7 +134,7 @@ describe('retry dual-porta do callback (lib deploy-callback.sh)', () => {
     expect(result.stderr).toContain('HTTP 503')
   })
 
-  it('líder na primeira porta → 202 imediato sem alternar', async () => {
+  it.skipIf(!hasCurl)('líder na primeira porta → 202 imediato sem alternar', async () => {
     const a: StubState = { calls: [], healthy: new Set() }
     const b: StubState = { calls: [], healthy: new Set() }
     const sA = await startStub(a)
