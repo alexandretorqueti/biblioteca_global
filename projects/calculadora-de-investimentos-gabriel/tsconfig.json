@@ -6,7 +6,10 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"]
+    // "vite/client": as telas em screens/ importam módulos do apps/web que
+    // usam `import.meta.env`/`import.meta.glob` (mesmos tipos do tsconfig do
+    // apps/web); sem isto o typecheck deste workspace quebra nos transitivos.
+    "types": ["node", "vite/client"]
   },
   "include": ["*.ts", "config.ts", "calculo", "cotacoes", "screens"]
 }
