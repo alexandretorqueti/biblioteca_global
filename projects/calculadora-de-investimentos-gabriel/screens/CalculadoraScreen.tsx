@@ -26,6 +26,11 @@
  * sem botão de submissão), formatado em BRL por `Intl` pt-BR. Estados de
  * carregamento/erro/fallback da cotação visíveis; erro tipado não derruba
  * a tela. `componentId` inalterado (config.ts e registry.ts não mudam).
+ *
+ * Gráfico da evolução (RF-7, posição 5/9): `GraficoEvolucao` abaixo do
+ * valor final, consumindo `pontosAnuais`/`pontosMensais` JÁ produzidos pelo
+ * useMemo da projeção — o toggle anual/mensal é estado local de visão e
+ * apenas troca a série exibida (nenhum recálculo ao alternar).
  */
 import { useEffect, useMemo, useState } from "react"
 import {
@@ -49,6 +54,7 @@ import { RestEntityClient } from "@biblioteca-global/api-client"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 import { calcularProjecao, type ModoAporte } from "../calculo/projecao"
+import GraficoEvolucao, { type PeriodoGrafico } from "./GraficoEvolucao"
 import {
   converterAnualParaMensal,
   resolverCotacao,
@@ -114,6 +120,19 @@ export function formatarTaxaMensal(taxaMensalPercentual: number): string {
   })}% ao mês`
 }
 
+/**
+ * Série exibida no gráfico (RF-7): apenas COLHE a série memoizada conforme a
+ * visão — não recalcula nada. Anual: `prazoAnos` pontos; mensal:
+ * `prazoAnos · 12` pontos (invariantes REQ-D-002 do motor).
+ */
+export function serieDoGrafico(
+  projecao: ReturnType<typeof calcularProjecao> | null,
+  visao: PeriodoGrafico,
+): ReturnType<typeof calcularProjecao>["pontosAnuais"] | null {
+  if (!projecao) return null
+  return visao === "anual" ? projecao.pontosAnuais : projecao.pontosMensais
+}
+
 /** Normaliza coluna numérica vinda do CRUD (string/number) para ordenar. */
 function numeroDe(valor: unknown): number {
   if (typeof valor === "number") return Number.isFinite(valor) ? valor : 0
@@ -138,6 +157,9 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
   const [siglaIndice, setSiglaIndice] = useState("")
   const [taxaManualTexto, setTaxaManualTexto] = useState("")
   const [prazoTexto, setPrazoTexto] = useState("1")
+
+  // ── Visão do gráfico (RF-7): estado local — alternar NÃO recalcula ──
+  const [visaoGrafico, setVisaoGrafico] = useState<PeriodoGrafico>("anual")
 
   // ── Estado da leitura do cadastro de índices (GET) ──
   const [indices, setIndices] = useState<readonly IndiceRecord[]>([])
@@ -451,6 +473,45 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
           </Box>
         </Stack>
       </Paper>
+
+      {projecao && (
+        <Paper
+          variant="outlined"
+          sx={{ p: 3, borderRadius: 2, maxWidth: "100%", overflow: "hidden" }}
+          data-testid="painel-grafico"
+        >
+          <Stack spacing={1.5}>
+            <Stack
+              direction="row"
+              spacing={2}
+              alignItems="center"
+              justifyContent="space-between"
+              flexWrap="wrap"
+            >
+              <Typography variant="subtitle2">
+                Evolução do investimento
+              </Typography>
+              <ToggleButtonGroup
+                exclusive
+                value={visaoGrafico}
+                onChange={(_evento, novaVisao: PeriodoGrafico | null) => {
+                  if (novaVisao) setVisaoGrafico(novaVisao)
+                }}
+                aria-label="Alternância anual/mensal do gráfico"
+                size="small"
+              >
+                <ToggleButton value="anual">Ano a ano</ToggleButton>
+                <ToggleButton value="mensal">Mês a mês</ToggleButton>
+              </ToggleButtonGroup>
+            </Stack>
+            <GraficoEvolucao
+              pontos={serieDoGrafico(projecao, visaoGrafico) ?? []}
+              periodo={visaoGrafico}
+              formatarValor={formatarBRL}
+            />
+          </Stack>
+        </Paper>
+      )}
     </Stack>
   )
 }
