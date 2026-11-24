@@ -283,9 +283,27 @@ function AgentStatusItem({ agent, compact }: AgentStatusItemProps) {
             #{agent.taskId}{agent.subtaskId != null ? ` · S${agent.subtaskId}` : ""}
           </Typography>
         )}
+        {isWorking && agent.model && (
+          <Typography
+            variant="caption"
+            data-testid={`agent-model-${agent.id}`}
+            title={agent.model}
+            sx={{
+              fontSize: 10,
+              lineHeight: 1.1,
+              color: "text.secondary",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis"
+            }}
+          >
+            {agent.model}
+          </Typography>
+        )}
         {!isWorking && agent.model && (
           <Typography
             variant="caption"
+            title={agent.model}
             sx={{
               fontSize: 10,
               lineHeight: 1.1,
