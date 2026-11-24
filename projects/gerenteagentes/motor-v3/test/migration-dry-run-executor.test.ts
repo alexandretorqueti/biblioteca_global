@@ -133,6 +133,66 @@ describe('MigrationDryRunExecutor', () => {
       expect(insertCall[0]).toContain('gate_scratch_456_users')
     })
 
+    it('clona e reescreve CREATE INDEX ... ON (incidente tarefa 1063/b3538: dry-run executava o DDL na tabela REAL)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_indice.sql'),
+        'CREATE INDEX `colaboradores_usuario_id_index` ON `colaboradores` (`usuario_id`);',
+      )
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `colaboradores` (`id` INT NOT NULL, `usuario_id` INT NULL)' }]]) // SHOW CREATE TABLE real
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE TABLE scratch (clone)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE INDEX reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 1063)
+      await executor.execute(ws, baseCommit)
+
+      const indexCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && /^CREATE\s+INDEX/i.test(call[0])
+      )
+      expect(indexCall).toBeDefined()
+      // O alvo do CREATE INDEX é a tabela scratch — nunca a real.
+      expect(indexCall![0]).toContain('ON `gate_scratch_1063_colaboradores`')
+      expect(indexCall![0]).not.toContain('ON `colaboradores`')
+      // O nome do índice é preservado (contém o nome da tabela como substring).
+      expect(indexCall![0]).toContain('`colaboradores_usuario_id_index`')
+      expect(indexCall![0]).not.toContain('gate_scratch_1063_colaboradores_usuario_id_index')
+      // O clone da estrutura real foi solicitado antes da execução.
+      expect(querySpy.mock.calls[0][0]).toContain('SHOW CREATE TABLE')
+    })
+
+    it('clona e reescreve DROP INDEX ... ON para a tabela scratch', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_drop_indice.sql'),
+        'DROP INDEX `tarefas_prazo_index` ON `tarefas`;',
+      )
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `tarefas` (`id` INT NOT NULL, KEY `tarefas_prazo_index` (`id`))' }]]) // SHOW CREATE TABLE real
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE TABLE scratch (clone)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // DROP INDEX reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 1064)
+      await executor.execute(ws, baseCommit)
+
+      const dropCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && /^DROP\s+INDEX/i.test(call[0])
+      )
+      expect(dropCall).toBeDefined()
+      expect(dropCall![0]).toContain('ON `gate_scratch_1064_tarefas`')
+      expect(dropCall![0]).not.toContain('ON `tarefas`')
+    })
+
     it('preserva CURRENT_TIMESTAMP em cláusulas ON UPDATE de CREATE TABLE', async () => {
       const ws = await createWorkspace()
       await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
