@@ -33,13 +33,18 @@ function novoService(tarefaRow?: Record<string, unknown>): GerenteAgentesService
     { id: 11, seq: 2, titulo: 'Concluída', status: 'completed', deliverCount: 1, resultado: 'Entrega persistida', scope: null, acceptanceCriteria: null, workspaceStatus: null, workspaceBranch: null, workspaceCommitSha: null, correctionForSubtaskId: null },
   ];
   const blockRows = [
-    { subtarefaId: 10, reason: 'Dependência indisponível', command: null, exitCode: null, excerpt: null },
+    { subtarefaId: 10, reason: null, command: null, exitCode: null, excerpt: 'Dependência indisponível' },
     { subtarefaId: null, reason: 'Bloqueio da tarefa não pertence à subtarefa', command: null, exitCode: null, excerpt: null },
+  ];
+  const sessionRows = [
+    { subtarefaId: 10, id: 101, model: 'openai/gpt-5.6-terra', purpose: 'development', status: 'active', openedAt: '2026-11-24T10:00:00Z', lastActivityAt: '2026-11-24T10:20:00Z', closedAt: null },
+    { subtarefaId: 11, id: 102, model: 'deepseek/deepseek-v4-flash', purpose: 'development', status: 'failed', openedAt: '2026-11-24T08:00:00Z', lastActivityAt: '2026-11-24T08:30:00Z', closedAt: '2026-11-24T08:31:00Z' },
+    { subtarefaId: 11, id: 103, model: 'ollama/qwen3.8:27b-mtp-q8_0', purpose: 'development', status: 'completed', openedAt: '2026-11-24T07:00:00Z', lastActivityAt: '2026-11-24T07:40:00Z', closedAt: '2026-11-24T07:41:00Z' },
   ];
   const db = {
     select: () => ({ from: () => ({ where: () => ({
       limit: () => Promise.resolve([task]),
-      orderBy: () => Promise.resolve(++orderedSelects === 1 ? subtaskRows : blockRows),
+      orderBy: () => { const n = ++orderedSelects; return Promise.resolve(n === 1 ? subtaskRows : n === 2 ? blockRows : sessionRows); },
     }) }) }),
     execute: vi.fn().mockResolvedValue([[], []]),
   };
@@ -80,5 +85,28 @@ describe('GerenteAgentesService — motor-detail', () => {
     const detail = await novoService({ descricao: null }).motorDetailTarefa({} as never, 1);
 
     expect(detail.task).toMatchObject({ descricao: null });
+  });
+
+  it('enriquece cada subtarefa com currentModel (sessão ativa) e modelHistory (mais recente primeiro)', async () => {
+    const detail = await novoService().motorDetailTarefa({} as never, 1);
+
+    // Subtarefa 10 tem uma sessão ativa → currentModel preenchido.
+    expect(detail.subtasks?.[0]).toMatchObject({
+      currentModel: 'openai/gpt-5.6-terra',
+      modelHistory: [{
+        id: 101,
+        model: 'openai/gpt-5.6-terra',
+        purpose: 'development',
+        status: 'active',
+        openedAt: '2026-11-24T10:00:00Z',
+        closedAt: null,
+      }],
+    });
+    // Subtarefa 11 só tem sessões encerradas → currentModel null e histórico completo.
+    expect(detail.subtasks?.[1]).toMatchObject({ currentModel: null });
+    expect(detail.subtasks?.[1]?.modelHistory).toEqual([
+      expect.objectContaining({ id: 102, model: 'deepseek/deepseek-v4-flash', status: 'failed' }),
+      expect.objectContaining({ id: 103, model: 'ollama/qwen3.8:27b-mtp-q8_0', status: 'completed' }),
+    ]);
   });
 });

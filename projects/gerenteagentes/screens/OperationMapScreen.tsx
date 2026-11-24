@@ -37,7 +37,7 @@ export const componentId = "gerenteagentes-operation-map"
 
 interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; dependsOnTaskIds?: number[]; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
-interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
+interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }>; currentModel?: string | null; modelHistory?: Array<{ id: number; model: string; purpose: string; status: string; openedAt: string; lastActivityAt: string; closedAt: string | null }> | null }
 interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; tipo?: string | null; dependsOnTaskIds?: number[]; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
 interface MotorOperation { operationId: string; sequence: number; phase: string; outcome: string; messageType: string; commandCode?: string | null; policyCode?: string | null; policyVersion?: number | null; actionCode?: string | null; primitiveCode?: string | null; reasonCode?: string | null; resultJson?: unknown; durationMs?: number | null; createdAt: string }
 interface ChatMessage { id: number; tarefaId?: number; role: string; texto: string; createdAt: string; deliveryId?: number | null; deliveryState?: string | null; deliveryError?: string | null }
@@ -170,6 +170,20 @@ export default function OperationMapScreen() {
     {sub.blockInfo?.reason && <Alert severity="error" data-testid={`subtask-block-${sub.seq}`} sx={{ mt: 1, py: 0 }}>
       Motivo do bloqueio: {sub.blockInfo.reason}
     </Alert>}
+    {["running", "verifying"].includes(sub.status) && <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: .75 }} data-testid={`subtask-current-model-${sub.seq}`}>
+      Modelo atual: {sub.currentModel ?? "desconhecido"}
+    </Typography>}
+    {["completed", "verified", "blocked", "failed"].includes(sub.status) && (
+      (sub.modelHistory ?? []).length ? <Box sx={{ mt: .75 }} data-testid={`subtask-model-history-${sub.seq}`}>
+        <Typography variant="caption" color="text.secondary" display="block">Modelos que trabalharam nesta subtarefa (mais recente primeiro):</Typography>
+        {sub.modelHistory!.map(s => <Stack key={s.id} direction="row" spacing={.5} alignItems="center" sx={{ mt: .25 }}>
+          <Chip size="small" variant="outlined" label={s.model} sx={{ height: 20, fontSize: "0.7rem", mr: 0 }} />
+          <Typography variant="caption" color="text.secondary">{s.status} · {s.purpose} · {formatarDataHora(s.openedAt, timezone, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}{s.closedAt ? ` → ${formatarDataHora(s.closedAt, timezone, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " → em andamento"}</Typography>
+        </Stack>)}
+      </Box> : <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: .75 }} data-testid={`subtask-model-history-${sub.seq}`}>
+        Nenhuma sessão registrada para esta subtarefa.
+      </Typography>
+    )}
     {sub.resultado && <Box data-testid={`subtask-result-${sub.seq}`} sx={{ mt: 1, maxHeight: "220px", overflowY: "auto", p: 1.25, color: "#fff", bgcolor: "rgba(255, 255, 255, 0.08)", border: "1px solid rgba(255, 255, 255, 0.24)", borderRadius: 1, fontSize: "0.9375rem", fontFamily: '"Inter", "Roboto", "Helvetica Neue", Arial, sans-serif', lineHeight: 1.6, fontWeight: 400, letterSpacing: "0.01em" }}>
       <Typography variant="caption" color="success.light" display="block">Resultado da execução</Typography>
       Resultado: {sub.resultado}

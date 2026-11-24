@@ -3284,9 +3284,40 @@ export class GerenteAgentesService {
         }
       }
 
+      // Sessões de execução por subtarefa (motor_agent_sessions) — fonte do
+      // modelo atual e do histórico de modelos na aba Execução do front.
+      // Consulta aditiva: o mecanismo deliveryHistory/subtarefas_entregas
+      // permanece intacto (sem writer no motor-v3).
+      const sessoesAgent = subtarefasList.length > 0
+        ? await db
+            .select({
+              subtarefaId: motorAgentSessions.subtarefaId,
+              id: motorAgentSessions.id,
+              model: motorAgentSessions.modelo,
+              purpose: motorAgentSessions.purpose,
+              status: motorAgentSessions.status,
+              openedAt: motorAgentSessions.openedAt,
+              lastActivityAt: motorAgentSessions.lastActivityAt,
+              closedAt: motorAgentSessions.closedAt,
+            })
+            .from(motorAgentSessions)
+            .where(inArray(motorAgentSessions.subtarefaId, subtarefasList.map(s => s.id)))
+            .orderBy(desc(motorAgentSessions.lastActivityAt), desc(motorAgentSessions.id))
+        : [];
+      const sessoesPorSubtarefa = new Map<number, typeof sessoesAgent[number][]>();
+      for (const sessao of sessoesAgent) {
+        const lista = sessoesPorSubtarefa.get(sessao.subtarefaId) ?? [];
+        lista.push(sessao);
+        sessoesPorSubtarefa.set(sessao.subtarefaId, lista);
+      }
+
       // Converte para o formato esperado pelo front-end
       const subtasks = subtarefasList.map(s => {
         const bloqueio = bloqueioAtivoPorSubtarefa.get(s.id);
+        // Sessão ativa = sessão mais recente ainda aberta (status 'active' e
+        // closedAt NULL); a ordenação já é por last_activity_at desc, id desc.
+        const sessoesDaSubtarefa = sessoesPorSubtarefa.get(s.id) ?? [];
+        const sessaoAtiva = sessoesDaSubtarefa.find(x => x.status === 'active' && x.closedAt == null) ?? null;
         return {
         id: s.id,
         seq: s.seq,
@@ -3306,6 +3337,16 @@ export class GerenteAgentesService {
         workspaceCommitSha: s.workspaceCommitSha ?? null,
         correctionForSubtaskId: s.correctionForSubtaskId ?? null,
         deliveryHistory: motorHistoryBySeq.get(s.seq) ?? [],
+        currentModel: sessaoAtiva ? sessaoAtiva.model : null,
+        modelHistory: sessoesDaSubtarefa.map(x => ({
+          id: x.id,
+          model: x.model,
+          purpose: x.purpose,
+          status: x.status,
+          openedAt: x.openedAt,
+          lastActivityAt: x.lastActivityAt,
+          closedAt: x.closedAt,
+        })),
         };
       });
       
