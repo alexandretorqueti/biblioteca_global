@@ -1,0 +1,1 @@
+CREATE INDEX `colaboradores_usuario_id_index` ON `colaboradores` (`usuario_id`);

@@ -5,7 +5,12 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "jsx": "react-jsx",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // Guards Nest (src/tenancy) usam @Injectable/@Inject — mesmo padrão de apps/api.
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    // NestJS atribui dependências via DI fora do construtor.
+    "strictPropertyInitialization": false
   },
   "include": ["src", "schema.ts", "config.ts", "screens"]
 }
