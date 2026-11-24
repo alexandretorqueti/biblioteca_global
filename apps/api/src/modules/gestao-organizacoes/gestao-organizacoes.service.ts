@@ -32,7 +32,7 @@ import {
   NotFoundException,
 } from "@nestjs/common"
 import { and, eq, ne } from "drizzle-orm"
-import { projetos, usuarios } from "../../../../../database/schema"
+import { projetos, projetosUsuarios, usuarios } from "../../../../../database/schema"
 import {
   colaboradores as colaboradoresTabela,
   organizacoes,
@@ -46,10 +46,16 @@ import {
   type ProjetoDb,
 } from "../crud/project-db.factory"
 import { SLUG_GESTAO_TAREFAS_GLOBAL } from "../crud/escopo/gestao-tarefas-global.escopo"
-import type {
-  AtualizarColaboradorInput,
-  CriarColaboradorInput,
-  CriarOrganizacaoInput,
+/**
+ * Schemas Zod usados pelo service (import estático: sob ESM/vitest o require
+ * relativo não resolve; não há ciclo real — o dto não importa o service).
+ */
+import {
+  criarColaboradorSchema,
+  atualizarColaboradorSchema,
+  type AtualizarColaboradorInput,
+  type CriarColaboradorInput,
+  type CriarOrganizacaoInput,
 } from "./dto/gestao-organizacoes.schemas"
 
 /** Contexto de colaborador já traduzido (organização da sessão). */
@@ -144,7 +150,7 @@ export class GestãoOrganizacoesService {
     corpo: Record<string, unknown>,
   ) {
     const ctx = this.exigirAdmin(contexto, corpo)
-    const input = this.parseCriar(colhoCorpo(colhoCorpo(corpo)) as never)
+    const input = this.parseCriar(corpo)
     const db = await this.obterDbProjeto()
 
     if (input.usuarioId !== undefined) {
@@ -255,11 +261,11 @@ export class GestãoOrganizacoesService {
 
   /** Zod com mensagem clara em `details` (padrão ocorrencias.controller). */
   private parseCriar(corpo: unknown): CriarColaboradorInput {
-    return parseOu400(criarSchemaLocal(), corpo) as CriarColaboradorInput
+    return parseOu400(criarColaboradorSchema, corpo) as CriarColaboradorInput
   }
 
   private parseAtualizar(corpo: unknown): AtualizarColaboradorInput {
-    return parseAtualizarLocal(corpo) as AtualizarColaboradorInput
+    return parseOu400(atualizarColaboradorSchema, corpo) as AtualizarColaboradorInput
   }
 
   private async obterDbProjeto(): Promise<ProjetoDb> {
@@ -312,7 +318,6 @@ export class GestãoOrganizacoesService {
     projetoId: number,
     usuarioId: number,
   ): Promise<void> {
-    const { projetosUsuarios } = await import("../../../../../database/schema")
     const existente = (
       await this.coreDb
         .select({ perfil: projetosUsuarios.perfil })
@@ -383,7 +388,7 @@ export class GestãoOrganizacoesService {
     organizacaoId: number,
     id: number,
   ) {
-    const linha = await db
+    const linhas = await db
       .select({
         id: colaboradoresTabela.id,
         organizacaoId: colaboradoresTabela.organizacaoId,
@@ -402,7 +407,7 @@ export class GestãoOrganizacoesService {
         ),
       )
       .limit(1)
-      .at(0)
+    const linha = linhas[0]
     if (!linha) {
       throw new NotFoundException(
         "Colaborador não encontrado nesta organização.",
@@ -412,7 +417,7 @@ export class GestãoOrganizacoesService {
   }
 
   private async buscarColaborador(db: ProjetoDb, id: number) {
-    const linha = await db
+    const linhas = await db
       .select({
         id: colaboradoresTabela.id,
         organizacaoId: colaboradoresTabela.organizacaoId,
@@ -426,7 +431,7 @@ export class GestãoOrganizacoesService {
       .from(colaboradoresTabela)
       .where(eq(colaboradoresTabela.id, id))
       .limit(1)
-      .at(0)
+    const linha = linhas[0]
     if (!linha) {
       throw new NotFoundException("Colaborador não encontrado após a gravação.")
     }
@@ -434,24 +439,23 @@ export class GestãoOrganizacoesService {
   }
 }
 
-/** Indireção para os schemas (evita import cíclico em testes unitários). */
-function criarSchemaLocal() {
-  return require("./dto/gestao-organizacoes.schemas").criarColaboradorSchema
-}
-function parseAtualizarLocal(corpo: unknown) {
-  const { atualizarColaboradorSchema } = require("./dto/gestao-organizacoes.schemas")
-  return parseOu400(atualizarColaboradorSchema, corpo)
-}
-function colhoCorpo<T>(v: T): T {
-  return v
-}
-function parseOu400(schema: { safeParse: (v: unknown) => { success: boolean; data?: unknown; error?: { issues: Array<{ path: (string | number)[]; message: string }> } } }, corpo: unknown) {
+/** Zod 4 (`$ZodIssue.path` é `PropertyKey[]`) → mensagem clara em `details`. */
+function parseOu400(
+  schema: {
+    safeParse: (v: unknown) => {
+      success: boolean
+      data?: unknown
+      error?: { issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }> }
+    }
+  },
+  corpo: unknown,
+) {
   const parsed = schema.safeParse(corpo)
   if (!parsed.success) {
     throw new BadRequestException({
       message: "Dados de colaborador inválidos",
       details: (parsed.error?.issues ?? []).map((issue) => ({
-        caminho: issue.path.join("."),
+        caminho: issue.path.map((parte) => String(parte)).join("."),
         problema: issue.message,
       })),
     })
