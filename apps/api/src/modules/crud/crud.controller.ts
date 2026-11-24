@@ -2,7 +2,9 @@
  * CrudController — rotas genéricas /api/:slug/:resource (PoC §6.2).
  * Registrado por ÚLTIMO no AppModule: rotas específicas (auth, usuarios,
  * projetos) têm precedência; resources reservados são bloqueados no service.
- * Escrita exige perfil admin/gerente/operador; visualizador só lê.
+ * Escrita exige perfil admin/gerente/operador; visualizador só lê (na CRIAÇÃO
+ * a regra é avaliada no service, onde extensões de escopo podem liberar
+ * perfis adicionais por resource — ver `CrudController.criar`).
  *
  * Rotas namespaced: /api/<slug>/<resource> (ex.: /api/taqui/tarefas).
  * O slug é validado contra o schema registry; resource contra a whitelist
@@ -20,14 +22,17 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common"
 import type { ProjetoResumo } from "@biblioteca-global/shared"
+import type { RequisicaoComEscopoOrganizacao } from "../../../../../projects/gestao-de-tarefas-global/src/tenancy/tipos"
 import { CurrentProject } from "../../common/decorators/current.decorator"
 import { Roles } from "../../common/decorators/roles.decorator"
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
 import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
 import { RolesGuard } from "../../common/guards/roles.guard"
+import { EscopoOrganizacaoPorSlugGuard } from "./escopo/escopo-organizacao-por-slug.guard"
 import {
   CrudService,
   type CrudListParams,
@@ -35,7 +40,7 @@ import {
 } from "./crud.service"
 
 @Controller()
-@UseGuards(JwtAuthGuard, ProjectScopeGuard)
+@UseGuards(JwtAuthGuard, ProjectScopeGuard, EscopoOrganizacaoPorSlugGuard)
 export class CrudController {
   constructor(@Inject(CrudService) private readonly service: CrudService) {
     console.log("[CrudController] Instanciado!")
@@ -54,6 +59,7 @@ export class CrudController {
     @Param("slug") slug: string,
     @Param("resource") resource: string,
     @Query() query: Record<string, string>,
+    @Req() req: RequisicaoComEscopoOrganizacao,
   ) {
     // Valida que o slug do projeto corresponde ao projeto do token
     if (slug !== projeto.slug) {
@@ -99,7 +105,7 @@ export class CrudController {
     if (resource === VIRTUAL_RESOURCE_OPENCLAW_AGENTES) {
       return this.service.listarVirtual(projeto, resource, params)
     }
-    return this.service.listar(projeto, resource, params)
+    return this.service.listar(projeto, resource, params, req.escopoOrganizacao)
   }
 
   @Get(":slug/:resource/:id")
@@ -108,6 +114,7 @@ export class CrudController {
     @Param("slug") slug: string,
     @Param("resource") resource: string,
     @Param("id") idRaw: string,
+    @Req() req: RequisicaoComEscopoOrganizacao,
   ) {
     if (slug !== projeto.slug) {
       throw new NotFoundException("Projeto não encontrado")
@@ -115,17 +122,24 @@ export class CrudController {
     if (resource === VIRTUAL_RESOURCE_OPENCLAW_AGENTES) {
       return this.service.detalharVirtual(projeto, resource, idRaw)
     }
-    return this.service.detalhar(projeto, resource, Number(idRaw))
+    return this.service.detalhar(projeto, resource, Number(idRaw), req.escopoOrganizacao)
   }
 
+  /**
+   * Criação: a regra de perfil é aplicada no CrudService (e não via @Roles)
+   * porque extensões de escopo por projeto podem liberar criação a perfis
+   * adicionais — ex.: "qualquer usuário cria tarefa" no
+   * gestao-de-tarefas-global abre POST ao perfil visualizador do escopo.
+   * Sem extensão, o service mantém exatamente a regra padrão
+   * (admin/gerente/operador).
+   */
   @Post(":slug/:resource")
-  @UseGuards(RolesGuard)
-  @Roles("admin", "gerente", "operador")
   criar(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,
     @Param("resource") resource: string,
     @Body() corpo: Record<string, unknown>,
+    @Req() req: RequisicaoComEscopoOrganizacao,
   ) {
     console.log(`[CrudController] criar: slug=${slug}, resource=${resource}, projeto.slug=${projeto.slug}, projeto.id=${projeto.id}`)
     // Valida que o slug do projeto corresponde ao projeto do token
@@ -136,7 +150,7 @@ export class CrudController {
     if (resource === VIRTUAL_RESOURCE_OPENCLAW_AGENTES) {
       throw new NotFoundException("Resource não encontrado")
     }
-    return this.service.criar(projeto, resource, corpo)
+    return this.service.criar(projeto, resource, corpo, req.escopoOrganizacao)
   }
 
   @Put(":slug/:resource/:id")
@@ -148,6 +162,7 @@ export class CrudController {
     @Param("resource") resource: string,
     @Param("id") idRaw: string,
     @Body() corpo: Record<string, unknown>,
+    @Req() req: RequisicaoComEscopoOrganizacao,
   ) {
     if (slug !== projeto.slug) {
       throw new NotFoundException("Projeto não encontrado")
@@ -155,7 +170,7 @@ export class CrudController {
     if (resource === VIRTUAL_RESOURCE_OPENCLAW_AGENTES) {
       throw new NotFoundException("Resource não encontrado")
     }
-    return this.service.atualizar(projeto, resource, Number(idRaw), corpo)
+    return this.service.atualizar(projeto, resource, Number(idRaw), corpo, req.escopoOrganizacao)
   }
 
   @Delete(":slug/:resource/:id")
@@ -166,6 +181,7 @@ export class CrudController {
     @Param("slug") slug: string,
     @Param("resource") resource: string,
     @Param("id") idRaw: string,
+    @Req() req: RequisicaoComEscopoOrganizacao,
   ): Promise<{ ok: boolean }> {
     if (slug !== projeto.slug) {
       throw new NotFoundException("Projeto não encontrado")
@@ -177,7 +193,7 @@ export class CrudController {
     if (!Number.isInteger(id) || id < 1) {
       throw new NotFoundException("Registro não encontrado")
     }
-    await this.service.remover(projeto, resource, id)
+    await this.service.remover(projeto, resource, id, req.escopoOrganizacao)
     return { ok: true }
   }
 }

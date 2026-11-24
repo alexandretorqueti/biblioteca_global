@@ -21,6 +21,7 @@ import {
   char,
   date,
   datetime,
+  index,
   int,
   json,
   mysqlEnum,
@@ -71,9 +72,12 @@ export const colaboradores = mysqlTable("colaboradores", {
   /**
    * Vínculo com o usuário global da plataforma (core.usuarios). Sem FK
    * física: banco do projeto (projeto_<id>) é isolado do core.
+   * Índice: resolução por request do contexto organização/colaborador
+   * (tenancy intra-projeto — `usuario_id = sub` do JWT).
    */
   usuarioId: int("usuario_id", { unsigned: true }),
-})
+},
+(table) => [index("colaboradores_usuario_id_index").on(table.usuarioId)])
 
 // ============================================================================
 // ÁREAS (Cadastros → Áreas)

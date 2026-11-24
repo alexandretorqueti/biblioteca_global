@@ -5,9 +5,16 @@
  * real (core + projeto_8496). Requer MYSQL_HOST no ambiente e o projeto
  * provisionado (migrations aplicadas + config corrente + ativo).
  *
+ * ATUALIZADO (macro #2, subtarefa 2 — tenancy intra-projeto): o CRUD deste
+ * slug agora exige colaborador ativo vinculado ao usuário e força
+ * organizacao_id da sessão. A organização e o colaborador do usuário de
+ * teste são semeados direto no banco do projeto; a criação de organizações
+ * via CRUD passou a ser vetada a colaboradores (403 — endpoints de
+ * administração da plataforma, subtarefa 3).
+ *
  * Cobre o critério de aceite: listar/buscar/filtrar/ordenar/criar/editar/
  * excluir via /api/gestao-de-tarefas-global/<resource> para areas, tags,
- * colaboradores, tarefas e regras_recorrencia (organizacoes como apoio/FK).
+ * colaboradores, tarefas e regras_recorrencia.
  *
  * O usuário de teste (teste_crud_gtg) e todas as linhas de negócio criadas
  * são removidos ao final (FK-order), sem tocar em dados de outros projetos.
@@ -17,15 +24,29 @@ import type { INestApplication } from "@nestjs/common"
 import { Test } from "@nestjs/testing"
 import request from "supertest"
 import argon2 from "argon2"
-import { eq } from "drizzle-orm"
+import { eq, inArray, sql } from "drizzle-orm"
 import {
   projetos,
   projetosUsuarios,
   usuarios,
 } from "../../../../../../database/schema"
+import {
+  anexos,
+  areas,
+  colaboradores as colaboradoresProjeto,
+  historicoTarefas,
+  mensagensTarefa,
+  notificacoes,
+  organizacoes as organizacoesProjeto,
+  regrasRecorrencia,
+  tags,
+  tarefaTags,
+  tarefas,
+} from "../../../../../../projects/gestao-de-tarefas-global/schema"
 import { AppModule } from "../../../app.module"
 import { configureApp } from "../../../bootstrap"
 import { CORE_DB, type CoreDb } from "../../../database/database.module"
+import { PROJECT_DB_FACTORY, type ProjectDbFactory, type ProjetoDb } from "../project-db.factory"
 
 const USUARIO_TESTE = "teste_crud_gtg"
 const SENHA_TESTE = "CrudGtg#2026"
@@ -36,12 +57,14 @@ const hasMysql = Boolean(process.env.MYSQL_HOST)
 describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcional)", () => {
   let app: INestApplication
   let db: CoreDb
+  let pdb: ProjetoDb
   let accessToken: string
   let projetoId: number
 
   // ids criados (limpeza em ordem inversa de FK)
   const ids: {
     organizacao?: number
+    colaboradorSessao?: number
     colaborador?: number
     area?: number
     tag?: number
@@ -55,12 +78,14 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     configureApp(app)
     await app.init()
     db = app.get<CoreDb>(CORE_DB)
+    const factory = app.get<ProjectDbFactory>(PROJECT_DB_FACTORY)
 
     const projeto = (
       await db.select({ id: projetos.id }).from(projetos).where(eq(projetos.slug, SLUG))
     ).at(0)
     if (!projeto) throw new Error(`pré-requisito ausente: projeto ${SLUG} no core`)
     projetoId = projeto.id
+    pdb = await factory.obter({ id: projetoId })
 
     // Usuário de teste (limpa resíduo de execuções anteriores) + vínculo admin.
     await limparUsuarioTeste()
@@ -82,6 +107,27 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
       perfil: "admin",
     })
 
+    // Tenancy: organização + colaborador ativo vinculado ao usuário de teste
+    // (a criação de organizações via CRUD é restrita aos endpoints de
+    // administração — macro #2, subtarefa 3).
+    await limparOrganizacaoTeste()
+    const [org] = await pdb
+      .insert(organizacoesProjeto)
+      .values({ nome: `Organização ${SUFIXO}`, descricao: "organização do teste e2e" })
+      .$returningId()
+    ids.organizacao = Number(org!.id)
+    const [colab] = await pdb
+      .insert(colaboradoresProjeto)
+      .values({
+        organizacaoId: ids.organizacao,
+        nome: "Usuário E2E CRUD",
+        email: `${USUARIO_TESTE}@exemplo.com`,
+        ativo: true,
+        usuarioId: usuario.id,
+      })
+      .$returningId()
+    ids.colaboradorSessao = Number(colab!.id)
+
     // login → select-project → access token do projeto.
     const login = await request(app.getHttpServer())
       .post("/api/auth/login")
@@ -94,11 +140,12 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     expect(select.status).toBe(201)
     accessToken = select.body.accessToken as string
     expect(accessToken).toBeTruthy()
-  }, 90_000)
+  }, 120_000)
 
   afterAll(async () => {
     if (app) {
       await apagarSobras()
+      await limparOrganizacaoTeste()
       await limparUsuarioTeste()
       await app.close()
     }
@@ -123,6 +170,36 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     await db.delete(usuarios).where(eq(usuarios.id, id))
   }
 
+  /** Varredura completa das linhas da organização de teste (ordem de FK). */
+  async function limparOrganizacaoTeste(): Promise<void> {
+    if (!pdb) return
+    const orgs = await pdb
+      .select({ id: organizacoesProjeto.id })
+      .from(organizacoesProjeto)
+      .where(sql`nome LIKE ${`Organização e2e-%`}`)
+    const orgIds = orgs.map((o) => Number(o.id))
+    if (orgIds.length === 0) return
+    const tarefaIds = (
+      await pdb
+        .select({ id: tarefas.id })
+        .from(tarefas)
+        .where(inArray(tarefas.organizacaoId, orgIds))
+    ).map((t) => Number(t.id))
+    if (tarefaIds.length > 0) {
+      await pdb.delete(tarefaTags).where(inArray(tarefaTags.tarefaId, tarefaIds))
+      await pdb.delete(mensagensTarefa).where(inArray(mensagensTarefa.tarefaId, tarefaIds))
+      await pdb.delete(historicoTarefas).where(inArray(historicoTarefas.tarefaId, tarefaIds))
+      await pdb.delete(anexos).where(inArray(anexos.tarefaId, tarefaIds))
+    }
+    await pdb.delete(notificacoes).where(inArray(notificacoes.organizacaoId, orgIds))
+    await pdb.delete(tarefas).where(inArray(tarefas.organizacaoId, orgIds))
+    await pdb.delete(regrasRecorrencia).where(inArray(regrasRecorrencia.organizacaoId, orgIds))
+    await pdb.delete(tags).where(inArray(tags.organizacaoId, orgIds))
+    await pdb.delete(areas).where(inArray(areas.organizacaoId, orgIds))
+    await pdb.delete(colaboradoresProjeto).where(inArray(colaboradoresProjeto.organizacaoId, orgIds))
+    await pdb.delete(organizacoesProjeto).where(inArray(organizacoesProjeto.id, orgIds))
+  }
+
   /** Remove linhas de negócio residuais (falha no meio do fluxo) via API. */
   async function apagarSobras(): Promise<void> {
     const ordem: Array<[string, keyof typeof ids]> = [
@@ -131,7 +208,6 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
       ["tags", "tag"],
       ["areas", "area"],
       ["colaboradores", "colaborador"],
-      ["organizacoes", "organizacao"],
     ]
     for (const [resource, chave] of ordem) {
       const id = ids[chave]
@@ -144,17 +220,13 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     }
   }
 
-  it("criar: organização → colaborador → área (líder = responsável) → tag", async () => {
-    const org = await api("post", "organizacoes", {
-      nome: `Organização ${SUFIXO}`,
-      descricao: "organização do teste e2e",
-    })
-    expect([200, 201]).toContain(org.status)
-    ids.organizacao = Number(org.body.id)
-    expect(ids.organizacao).toBeGreaterThan(0)
+  it("criação de organização via CRUD é vetada a colaborador (403)", async () => {
+    const org = await api("post", "organizacoes", { nome: `Organização extra ${SUFIXO}` })
+    expect(org.status).toBe(403)
+  })
 
+  it("criar: colaborador → área (líder = responsável) → tag (organizacao_id forçado da sessão)", async () => {
     const colab = await api("post", "colaboradores", {
-      organizacao_id: ids.organizacao,
       nome: "Maria E2E da Silva",
       email: `maria.${SUFIXO}@exemplo.com`,
       telefone: "(11) 91234-5678",
@@ -163,28 +235,27 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     expect([200, 201]).toContain(colab.status)
     ids.colaborador = Number(colab.body.id)
     expect(colab.body.nome).toBe("Maria E2E da Silva")
+    // Escrita força a organização da sessão (body sem organizacao_id).
+    expect(Number(colab.body.organizacaoId)).toBe(ids.organizacao)
 
     // Líder cadastrável como responsável de área (critério de aceite da macro).
     const area = await api("post", "areas", {
-      organizacao_id: ids.organizacao,
       nome: `Área ${SUFIXO}`,
       responsavel_id: ids.colaborador,
     })
     expect([200, 201]).toContain(area.status)
     ids.area = Number(area.body.id)
     expect(Number(area.body.responsavelId)).toBe(ids.colaborador)
+    expect(Number(area.body.organizacaoId)).toBe(ids.organizacao)
 
-    const tag = await api("post", "tags", {
-      organizacao_id: ids.organizacao,
-      nome: `tag-${SUFIXO}`,
-    })
+    const tag = await api("post", "tags", { nome: `tag-${SUFIXO}` })
     expect([200, 201]).toContain(tag.status)
     ids.tag = Number(tag.body.id)
+    expect(Number(tag.body.organizacaoId)).toBe(ids.organizacao)
   })
 
   it("criar: regra de recorrência e tarefa (FKs + enums + datetime)", async () => {
     const regra = await api("post", "regras_recorrencia", {
-      organizacao_id: ids.organizacao,
       titulo: `Recorrência ${SUFIXO}`,
       area_id: ids.area,
       responsavel_id: ids.colaborador,
@@ -198,12 +269,11 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     expect(regra.body.frequencia).toBe("semanal")
 
     const tarefa = await api("post", "tarefas", {
-      organizacao_id: ids.organizacao,
       titulo: `Tarefa ${SUFIXO}`,
       descricao: "criada pelo teste funcional",
       area_id: ids.area,
       responsavel_id: ids.colaborador,
-      criado_por_id: ids.colaborador,
+      criado_por_id: ids.colaboradorSessao,
       prioridade: "alta",
       prazo: "2026-12-01 10:00:00",
       regra_recorrencia_id: ids.regra,
@@ -215,6 +285,7 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
     ids.tarefa = Number(tarefa.body.id)
     expect(tarefa.body.prioridade).toBe("alta")
     expect(tarefa.body.status).toBe("aberta") // default do schema
+    expect(Number(tarefa.body.organizacaoId)).toBe(ids.organizacao)
   })
 
   it("listar com paginação + buscar (search) nas tarefas", async () => {
@@ -265,7 +336,6 @@ describe.skipIf(!hasMysql)("CRUD namespaced — gestao-de-tarefas-global (funcio
       ["tags", "tag"],
       ["areas", "area"],
       ["colaboradores", "colaborador"],
-      ["organizacoes", "organizacao"],
     ] as Array<[string, keyof typeof ids]>) {
       const id = ids[chave]
       expect(id, `${resource} deveria ter sido criada`).toBeTruthy()
