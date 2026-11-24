@@ -42,7 +42,7 @@
  * `role="img"` + `aria-label` (GraficoEvolucao); erros/hints via helperText
  * do próprio campo.
  */
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Alert,
   Box,
@@ -63,7 +63,11 @@ import type { EntityRecord, PaginatedResult } from "@biblioteca-global/shared"
 import { RestEntityClient } from "@biblioteca-global/api-client"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
-import { calcularProjecao, type ModoAporte } from "../calculo/projecao"
+import {
+  calcularProjecao,
+  type ModoAporte,
+  type ResultadoProjecao,
+} from "../calculo/projecao"
 import GraficoEvolucao, { type PeriodoGrafico } from "./GraficoEvolucao"
 import {
   converterAnualParaMensal,
@@ -128,6 +132,23 @@ export function formatarTaxaMensal(taxaMensalPercentual: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   })}% ao mês`
+}
+
+/**
+ * Mensagem amigável por código de erro tipado (REQ-NF-003): NENHUM código
+ * cru (`TIMEOUT`, `FONTE_INDISPONIVEL`, `DADO_AUSENTE`) vaza para a tela —
+ * o código segue disponível em `data-error-code` para testes/diagnóstico.
+ */
+export function mensagemErroAmigavel(code: string): string {
+  switch (code) {
+    case "TIMEOUT":
+      return "A fonte de cotação demorou para responder."
+    case "DADO_AUSENTE":
+      return "A fonte de cotação não retornou dados para este índice."
+    case "FONTE_INDISPONIVEL":
+    default:
+      return "A fonte de cotação está indisponível no momento."
+  }
 }
 
 /**
@@ -271,8 +292,18 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
     return null
   }, [taxaManualAnual, cotacao])
 
-  // Projeção recalculada a cada mudança de aporte/taxa/prazo (sem submissão).
-  const projecao = useMemo(() => {
+  // Duração da última projeção calculada (ms) — telemetria em ref (sem
+  // re-render) além do atributo discreto no resultado (subtarefa 3,
+  // REQ-NF-003/REQ-F-004 — verificação do requisito <100ms).
+  const tempoMedidoRef = useRef<number | null>(null)
+
+  // Projeção recalculada a cada mudança de aporte/taxa/prazo (sem submissão),
+  // MEDIDA com `performance.now()` (custo desprezível — 2 chamadas): a duração
+  // (ms) acompanha o próprio resultado da memo — SEM estado extra (nenhum
+  // re-render adicional) e SEM alterar a matemática de projecao.ts. Exposta
+  // como atributo discreto `data-tempo-calculo-ms` no painel de resultado e,
+  // em dev, via `console.debug` (telemetria opcional).
+  const projecaoMedida = useMemo(() => {
     const valor =
       modo === "unico"
         ? parsearNumeroInput(valorInicialTexto)
@@ -282,26 +313,41 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
     // (validação compartilhada com o badge do campo — ver valorInvalido)
     if (prazoAnos === null) return null
     if (taxaMensalEfetiva === null) return null
+    const entrada =
+      modo === "unico"
+        ? {
+            modo: "unico" as const,
+            valorInicial: valor,
+            prazoAnos,
+            taxaMensalPercentual: taxaMensalEfetiva,
+          }
+        : {
+            modo: "mensal" as const,
+            aporteMensal: valor,
+            prazoAnos,
+            taxaMensalPercentual: taxaMensalEfetiva,
+          }
+    const inicio = performance.now()
+    let resultado: ResultadoProjecao | null
     try {
-      return calcularProjecao(
-        modo === "unico"
-          ? {
-              modo: "unico",
-              valorInicial: valor,
-              prazoAnos,
-              taxaMensalPercentual: taxaMensalEfetiva,
-            }
-          : {
-              modo: "mensal",
-              aporteMensal: valor,
-              prazoAnos,
-              taxaMensalPercentual: taxaMensalEfetiva,
-            },
-      )
+      resultado = calcularProjecao(entrada)
     } catch {
-      return null
+      resultado = null
     }
+    const duracaoMs = performance.now() - inicio
+    tempoMedidoRef.current = duracaoMs
+    if (resultado === null) return null
+    if (import.meta.env.DEV) {
+      console.debug(
+        "[calculadora] tempo de cálculo da projeção: %s ms",
+        duracaoMs.toFixed(3),
+      )
+    }
+    return { resultado, duracaoMs }
   }, [modo, valorInicialTexto, aporteMensalTexto, prazoTexto, taxaMensalEfetiva])
+
+  const projecao = projecaoMedida?.resultado ?? null
+  const tempoCalculoMs = projecaoMedida?.duracaoMs ?? null
 
   const prazoInvalido =
     prazoTexto.trim() !== "" && parsearPrazoAnos(prazoTexto) === null
@@ -312,14 +358,18 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
   const taxaManualInvalida =
     taxaManualTexto.trim() !== "" && !taxaManualValida
 
+  const usandoFallback = cotacao !== null && cotacao.fonte.startsWith("fallback")
+  const taxaDoFallback = usandoFallback ? cotacao.taxaAnual : null
+
   const origemTaxa = taxaManualValida
     ? "Taxa manual informada (ao ano, convertida por juros compostos)"
     : cotacao
-      ? `Índice ${cotacao.sigla} — cotação ${cotacao.fonte} em ${new Date(
-          cotacao.capturadaEm,
-        ).toLocaleString("pt-BR")}`
+      ? usandoFallback
+        ? `Índice ${cotacao.sigla} — taxa do cadastro do índice (cotação indisponível)`
+        : `Índice ${cotacao.sigla} — cotação ${cotacao.fonte} em ${new Date(
+            cotacao.capturadaEm,
+          ).toLocaleString("pt-BR")}`
       : "Selecione um índice ou informe uma taxa manual"
-  const usandoFallback = cotacao !== null && cotacao.fonte.startsWith("fallback")
 
   return (
     <Stack spacing={2} sx={{ p: { xs: 2, md: 3 }, maxWidth: 720 }} data-testid="calculadora-screen">
@@ -413,7 +463,9 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
             helperText={
               taxaManualInvalida
                 ? "Informe uma taxa ≥ 0"
-                : "Preenchida, tem prioridade sobre a cotação do índice e permite simular sem índice cadastrado"
+                : usandoFallback
+                  ? `Em uso: taxa do cadastro (${taxaDoFallback} % ao ano) — cotação indisponível. Preenchida, tem prioridade sobre ela`
+                  : "Preenchida, tem prioridade sobre a cotação do índice e permite simular sem índice cadastrado"
             }
           />
 
@@ -446,16 +498,22 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
       )}
 
       {erroCotacao && (
-        <Alert severity="warning" data-testid="erro-cotacao">
-          Não foi possível obter a cotação ({erroCotacao.code}):{" "}
-          {erroCotacao.mensagem} Preencha a taxa manual para continuar.
+        <Alert
+          severity="warning"
+          data-testid="erro-cotacao"
+          data-error-code={erroCotacao.code}
+        >
+          {mensagemErroAmigavel(erroCotacao.code)} Preencha a taxa manual
+          (% ao ano) para continuar a simulação.
         </Alert>
       )}
 
       {usandoFallback && (
         <Alert severity="info" data-testid="alerta-fallback">
-          Fonte de cotação indisponível; usando a taxa anual do cadastro do
-          índice como fallback.
+          Cotação indisponível no momento — usando a taxa do cadastro do
+          índice ({taxaDoFallback?.toLocaleString("pt-BR", { maximumFractionDigits: 4 })} %
+          ao ano). A simulação segue funcionando; preencha a taxa manual para
+          sobrescrever.
         </Alert>
       )}
 
@@ -463,6 +521,9 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
         variant="outlined"
         sx={{ p: { xs: 2, sm: 3 }, borderRadius: 2 }}
         data-testid="resultado-simulacao"
+        data-tempo-calculo-ms={
+          tempoCalculoMs !== null ? tempoCalculoMs.toFixed(3) : undefined
+        }
       >
         <Stack direction={{ xs: "column", sm: "row" }} spacing={3}>
           <Box>

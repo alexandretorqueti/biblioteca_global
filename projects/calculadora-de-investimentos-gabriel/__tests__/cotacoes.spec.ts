@@ -317,13 +317,201 @@ describe("resolverCotacao — cache em memória (TTL default 10min)", () => {
   })
 
   it("fallback NÃO é cacheado: chamada seguinte tenta a fonte de novo", async () => {
+    // Erro NÃO-transitório (400): 1 tentativa por chamada, mas o fallback
+    // continua sem cache — a 2ª chamada tenta a fonte de novo.
     const fetchErro: FetchDeCotacao = vi.fn(async () => ({
       ok: false,
-      status: 503,
+      status: 400,
       text: async () => "",
     }))
     await resolverCotacao({ sigla: "CDI", taxaAnualFallback: 14 }, { fetchFn: fetchErro })
     await resolverCotacao({ sigla: "CDI", taxaAnualFallback: 14 }, { fetchFn: fetchErro })
     expect(fetchErro).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("resolverCotacao — retry único (timeout/rede/5xx)", () => {
+  it("cache hit NÃO tenta a fonte e reporta tentativas = 0", async () => {
+    const relogio = criarRelogio(TEMPO_VALIDO_MS)
+    const fetchFn = fetchFixture(fixtureSelic)
+    await resolverCotacao({ sigla: "SELIC" }, { fetchFn, agora: relogio.agora })
+    const novamente = await resolverCotacao({ sigla: "SELIC" }, { fetchFn, agora: relogio.agora })
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect(novamente.ok).toBe(true)
+    if (novamente.ok) expect(novamente.tentativas).toBe(0)
+  })
+
+  it("sucesso na 1ª tentativa: tentativas = 1", async () => {
+    const fetchFn = fetchFixture(fixtureSelic)
+    const resultado = await resolverCotacao({ sigla: "SELIC" }, { fetchFn })
+    expect(resultado.ok).toBe(true)
+    if (resultado.ok) expect(resultado.tentativas).toBe(1)
+  })
+
+  it("falha transitória na 1ª e acerto na 2ª: exatamente 1 retry (tentativas = 2)", async () => {
+    // 1ª: HTTP 500 (transitório); 2ª: fixture válido.
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, text: async () => "" })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(fixtureSelic),
+      })
+    const resultado = await resolverCotacao({ sigla: "SELIC" }, { fetchFn })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(resultado.ok).toBe(true)
+    if (resultado.ok) {
+      expect(resultado.tentativas).toBe(2)
+      expect(resultado.cotacao.taxaAnual).toBeCloseTo(13.65, 9)
+    }
+  })
+
+  it("timeout na 1ª e acerto na 2ª: cada tentativa tem seu próprio AbortController", async () => {
+    let aborts = 0
+    const fetchFn = vi
+      .fn()
+      // 1ª: só rejeita ao abortar (timeout) — transitório
+      .mockImplementationOnce((_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            aborts++
+            reject(Object.assign(new Error("abortado"), { name: "AbortError" }))
+          })
+        }),
+      )
+      // 2ª: fixture válido
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(fixtureSelic),
+      })
+    const resultado = await resolverCotacao({ sigla: "SELIC" }, { fetchFn, timeoutMs: 20 })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(aborts).toBe(1) // só a 1ª tentativa abortou; a 2ª respondeu
+    expect(resultado.ok).toBe(true)
+    if (resultado.ok) expect(resultado.tentativas).toBe(2)
+  })
+
+  it("esgotamento do retry (2× timeout) com fallback: tenta 2× e usa fallback (tentativas = 2)", async () => {
+    const fetchLento: FetchDeCotacao = vi.fn((_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("abortado"), { name: "AbortError" }))
+        })
+      }),
+    )
+    const resultado = await resolverCotacao(
+      { sigla: "CDI", taxaAnualFallback: 14.9 },
+      { fetchFn: fetchLento, timeoutMs: 20 },
+    )
+    expect(fetchLento).toHaveBeenCalledTimes(2) // 1 + 1 retry
+    expect(resultado.ok).toBe(true)
+    if (resultado.ok) {
+      expect(resultado.tentativas).toBe(2)
+      expect(resultado.cotacao.taxaAnual).toBe(14.9)
+      expect(resultado.cotacao.fonte).toMatch(/^fallback.*TIMEOUT/)
+    }
+  })
+
+  it("esgotamento do retry sem fallback: 2 tentativas → CotacaoError TIMEOUT (tentativas = 2)", async () => {
+    const fetchLento: FetchDeCotacao = vi.fn((_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("abortado"), { name: "AbortError" }))
+        })
+      }),
+    )
+    const resultado = await resolverCotacao({ sigla: "CDI" }, { fetchFn: fetchLento, timeoutMs: 20 })
+    expect(fetchLento).toHaveBeenCalledTimes(2)
+    expect(resultado.ok).toBe(false)
+    if (!resultado.ok) {
+      expect(resultado.tentativas).toBe(2)
+      expect(resultado.error.code).toBe("TIMEOUT")
+      expect(resultado.error.transitoria).toBe(true)
+    }
+  })
+
+  it("2× HTTP 500 (transitório) esgotam o retry e caem no fallback", async () => {
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 500, text: async () => "" }))
+    const resultado = await resolverCotacao(
+      { sigla: "SELIC", taxaAnualFallback: 15 },
+      { fetchFn },
+    )
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(resultado.ok).toBe(true)
+    if (resultado.ok) {
+      expect(resultado.tentativas).toBe(2)
+      expect(resultado.cotacao.taxaAnual).toBe(15)
+      expect(resultado.cotacao.fonte).toMatch(/^fallback.*FONTE_INDISPONIVEL/)
+    }
+  })
+
+  it("erro NÃO-transitório (HTTP 404) NÃO gera retry: tentativas = 1", async () => {
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 404, text: async () => "" }))
+    const resultado = await resolverCotacao({ sigla: "SELIC" }, { fetchFn })
+    expect(fetchFn).toHaveBeenCalledTimes(1) // sem retry
+    expect(resultado.ok).toBe(false)
+    if (!resultado.ok) {
+      expect(resultado.tentativas).toBe(1)
+      expect(resultado.error.code).toBe("FONTE_INDISPONIVEL")
+      expect(resultado.error.transitoria).toBeFalsy()
+    }
+  })
+
+  it("erro de parse (JSON inválido) NÃO gera retry: tentativas = 1", async () => {
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "nao-e-json{",
+    }))
+    const resultado = await resolverCotacao({ sigla: "SELIC" }, { fetchFn })
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect(resultado.ok).toBe(false)
+    if (!resultado.ok) {
+      expect(resultado.tentativas).toBe(1)
+      expect(resultado.error.code).toBe("FONTE_INDISPONIVEL")
+      expect(resultado.error.transitoria).toBeFalsy()
+    }
+  })
+
+  it("DADO_AUSENTE (corpo []) NÃO gera retry: tentativas = 1", async () => {
+    const resultado = await resolverCotacao({ sigla: "IPCA" }, { fetchFn: fetchFixture([]) })
+    expect(resultado.ok).toBe(false)
+    if (!resultado.ok) {
+      expect(resultado.tentativas).toBe(1)
+      expect(resultado.error.code).toBe("DADO_AUSENTE")
+    }
+  })
+
+  it("falha de rede (exceção) na 1ª e acerto na 2ª: retry (tentativas = 2)", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("ECONNREFUSED"))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(fixtureSelic),
+      })
+    const resultado = await resolverCotacao({ sigla: "SELIC" }, { fetchFn })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+    expect(resultado.ok).toBe(true)
+    if (resultado.ok) expect(resultado.tentativas).toBe(2)
+  })
+
+  it("tempo total: 2× timeoutMs é o teto (não excede 2× o timeout)", async () => {
+    const fetchLento: FetchDeCotacao = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("abortado"), { name: "AbortError" }))
+        })
+      })
+    const inicio = Date.now()
+    const resultado = await resolverCotacao({ sigla: "CDI" }, { fetchFn: fetchLento, timeoutMs: 40 })
+    const decorrido = Date.now() - inicio
+    expect(resultado.ok).toBe(false)
+    // Cada tentativa tem timeout de 40ms; 2 tentativas ⇒ ≈80ms, nunca o dobro.
+    expect(decorrido).toBeLessThan(2 * 40 + 100)
+    expect(decorrido).toBeGreaterThanOrEqual(2 * 40 - 20)
   })
 })

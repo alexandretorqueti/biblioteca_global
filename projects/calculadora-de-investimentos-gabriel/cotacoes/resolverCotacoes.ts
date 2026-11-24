@@ -40,6 +40,13 @@ export interface CotacaoError {
   readonly mensagem: string
   /** Série/fonte envolvida, quando conhecida (diagnóstico). */
   readonly origem?: string
+  /**
+   * `true` quando a falha é transitória (TIMEOUT / rede / HTTP 5xx) e uma
+   * nova tentativa pode ter sucesso; omitido/`false` = erro de negócio
+   * (4xx, parse, DADO_AUSENTE), que NÃO deve ser retentado. Define se o
+   * retry único é acionado.
+   */
+  readonly transitoria?: boolean
 }
 
 /** Cotação resolvida com sucesso (shape exigido pelo plano, posição 2/9). */
@@ -60,8 +67,8 @@ export interface Cotacao {
 }
 
 export type ResolvedorCotacoesResultado =
-  | { readonly ok: true; readonly cotacao: Cotacao }
-  | { readonly ok: false; readonly error: CotacaoError }
+  | { readonly ok: true; readonly cotacao: Cotacao; readonly tentativas: number }
+  | { readonly ok: false; readonly error: CotacaoError; readonly tentativas: number }
 
 /** Índice sob resolução (projeção do cadastro `indices` + opções da macro). */
 export interface IndiceCotavel {
@@ -250,8 +257,14 @@ function novoErro(
   code: CodigoCotacaoError,
   mensagem: string,
   origem?: string,
+  transitoria = false,
 ): CotacaoError {
-  return Object.freeze({ code, mensagem, ...(origem ? { origem } : {}) })
+  return Object.freeze({
+    code,
+    mensagem,
+    ...(origem ? { origem } : {}),
+    ...(transitoria ? { transitoria: true } : {}),
+  })
 }
 
 /**
@@ -268,28 +281,33 @@ async function buscarJsonComTimeout(
   try {
     const resposta = await fetchFn(url, { signal: controller.signal })
     if (!resposta.ok) {
+      // 5xx é transitório (elegível a retry); 4xx é erro de negócio (sem retry).
       throw novoErro(
         "FONTE_INDISPONIVEL",
         `fonte respondeu HTTP ${resposta.status}`,
         url,
+        resposta.status >= 500,
       )
     }
     const texto = await resposta.text()
     try {
       return JSON.parse(texto) as unknown
     } catch {
-      throw novoErro("FONTE_INDISPONIVEL", "corpo da fonte não é JSON válido", url)
+      // Corpo inválido = erro de negócio (parse), não transitório.
+      throw novoErro("FONTE_INDISPONIVEL", "corpo da fonte não é JSON válido", url, false)
     }
   } catch (error: unknown) {
     if (error && typeof error === "object" && "code" in error) throw error
     const name = (error as { name?: string } | null)?.name
     if (name === "AbortError") {
-      throw novoErro("TIMEOUT", `fonte não respondeu em ${timeoutMs}ms`, url)
+      throw novoErro("TIMEOUT", `fonte não respondeu em ${timeoutMs}ms`, url, true)
     }
+    // Falha de rede = transitória (elegível a retry).
     throw novoErro(
       "FONTE_INDISPONIVEL",
       `falha de rede ao consultar a fonte: ${(error as Error)?.message ?? "erro desconhecido"}`,
       url,
+      true,
     )
   } finally {
     clearTimeout(timer)
@@ -387,11 +405,18 @@ function montarCotacao(
 
 /**
  * Resolve a cotação de um índice. NUNCA lança: devolve
- * `{ ok: true, cotacao }` ou `{ ok: false, error: CotacaoError }`.
+ * `{ ok: true, cotacao, tentativas }` ou `{ ok: false, error, tentativas }`.
  *
- * Fluxo: cache (TTL) → série SGS do mapeamento → critério por tipo de valor
- * (taxa anual direta / % d.i. anualizada / variação histórica 12m) → cache
- * → retorno. Em falha: fallback do chamador (não cacheado) ou erro tipado.
+ * Fluxo: cache (TTL) → série SGS do mapeamento (com retry único para falhas
+ * transitórias: TIMEOUT/rede/5xx, AbortController próprio por tentativa,
+ * `tentativas` contado) → critério por tipo de valor (taxa anual direta /
+ * % d.i. anualizada / variação histórica 12m) → cache → retorno. Em falha
+ * (após esgotar o retry ou erro de negócio): fallback do chamador (não
+ * cacheado) ou erro tipado.
+ *
+ * `tentativas`: 0 em cache hit, 1 em acerto/falha sem retry na 1ª tentativa,
+ * 2 quando houve o retry único. `error.transitoria` indica se a causa é
+ * recuperável (retry).
  */
 export async function resolverCotacao(
   indice: IndiceCotavel,
@@ -405,93 +430,137 @@ export async function resolverCotacao(
   const agoraMs = agora()
   const emCache = cacheCotacoes.get(indice.sigla)
   if (emCache && agoraMs - emCache.armazenadoEmMs < ttlMs) {
-    return { ok: true, cotacao: emCache.cotacao }
+    return { ok: true, cotacao: emCache.cotacao, tentativas: 0 }
   }
 
   const mapeamento = MAPEAMENTO_COTACOES[indice.sigla]
   const usaVariacaoHistorica =
     indice.usaVariacaoHistorica ?? mapeamento?.usaVariacaoHistorica ?? false
 
-  try {
-    if (!mapeamento) {
-      throw novoErro(
-        "DADO_AUSENTE",
-        `sigla '${indice.sigla}' sem mapeamento de série SGS`,
+  // Retry único: 1 tentativa inicial + 1 nova tentativa (AbortController
+  // próprio por tentativa, mesmo `timeoutMs`) apenas para falhas
+  // transitórias. Erros de negócio (4xx/parse/DADO_AUSENTE) NÃO geram
+  // retry. O tempo total nunca excede 2 × timeoutMs. `tentativas` é exposto
+  // no resultado (0 em cache hit).
+  const MAX_TENTATIVAS = 2
+  let tentativas = 0
+  let ultimoErro: CotacaoError | null = null
+
+  for (let tentativa = 0; tentativa < MAX_TENTATIVAS; tentativa++) {
+    tentativas++
+    try {
+      const cotacao = await tentarFonte(
         indice.sigla,
-      )
-    }
-
-    const origem = `Banco Central (SGS) — série ${mapeamento.serie} (${mapeamento.descricao})`
-    const quantidade =
-      mapeamento.tipoValor === "NIVEL" || usaVariacaoHistorica
-        ? QUANTIDADE_OBSERVACOES_NIVEL
-        : 2
-
-    const observacoes = await observarSerieSgs(
-      mapeamento.serie,
-      quantidade,
-      fetchFn,
-      timeoutMs,
-    )
-
-    if (mapeamento.tipoValor === "NIVEL" || usaVariacaoHistorica) {
-      // Critério Ibovespa (RF-5): variação do nível entre o último ponto e o
-      // último ponto até 12 meses antes. Documentado em DECISOES-COTACOES.md §4.
-      const ultimo = observacoes[observacoes.length - 1]
-      const anterior = selecionarValorHa12Meses(observacoes)
-      if (!ultimo || !anterior || anterior.valor === 0) {
-        throw novoErro(
-          "DADO_AUSENTE",
-          "série de nível sem dados suficientes para variação de 12 meses",
-          origem,
-        )
-      }
-      const cotacao = montarCotacao(
-        indice.sigla,
-        calcularVariacaoHistorica(ultimo.valor, anterior.valor),
-        origem,
+        mapeamento,
+        usaVariacaoHistorica,
+        fetchFn,
+        timeoutMs,
         agoraMs,
       )
+      // Sucesso na fonte: armazena em cache (fallback NUNCA é cacheado).
       cacheCotacoes.set(indice.sigla, { cotacao, armazenadoEmMs: agoraMs })
-      return { ok: true, cotacao }
+      return { ok: true, cotacao, tentativas }
+    } catch (error: unknown) {
+      const cotacaoError: CotacaoError =
+        error && typeof error === "object" && "code" in error
+          ? (error as CotacaoError)
+          : novoErro(
+              "FONTE_INDISPONIVEL",
+              `falha inesperada ao resolver cotação: ${(error as Error)?.message ?? "erro desconhecido"}`,
+              indice.sigla,
+            )
+      ultimoErro = cotacaoError
+      // Continua (retry) só para falha transitória com tentativa restante.
+      if (cotacaoError.transitoria === true && tentativa + 1 < MAX_TENTATIVAS) continue
+      break
     }
-
-    const ultimo = observacoes[observacoes.length - 1]
-    if (!ultimo) {
-      throw novoErro("DADO_AUSENTE", "série sem observações", origem)
-    }
-    const taxaAnual =
-      mapeamento.tipoValor === "TAXA_DI"
-        ? anualizarTaxaDi(ultimo.valor)
-        : ultimo.valor
-    const cotacao = montarCotacao(indice.sigla, taxaAnual, origem, agoraMs)
-    cacheCotacoes.set(indice.sigla, { cotacao, armazenadoEmMs: agoraMs })
-    return { ok: true, cotacao }
-  } catch (error: unknown) {
-    const cotacaoError: CotacaoError =
-      error && typeof error === "object" && "code" in error
-        ? (error as CotacaoError)
-        : novoErro(
-            "FONTE_INDISPONIVEL",
-            `falha inesperada ao resolver cotação: ${(error as Error)?.message ?? "erro desconhecido"}`,
-            indice.sigla,
-          )
-
-    // Fallback do chamador: mantém a calculadora funcionando com a taxa
-    // informada; `fonte` marca explicitamente o fallback e o valor NÃO é
-    // cacheado (a próxima chamada tenta a fonte novamente).
-    const fallback = indice.taxaAnualFallback
-    if (fallback !== null && fallback !== undefined && Number.isFinite(fallback)) {
-      return {
-        ok: true,
-        cotacao: montarCotacao(
-          indice.sigla,
-          fallback,
-          `fallback (${cotacaoError.code}: ${cotacaoError.mensagem})`,
-          agoraMs,
-        ),
-      }
-    }
-    return { ok: false, error: cotacaoError }
   }
+
+  // Esgotou o retry (ou erro não-transitório): fallback do chamador
+  // (NUNCA cacheado) ou erro tipado.
+  const cotacaoError =
+    ultimoErro ??
+    novoErro("FONTE_INDISPONIVEL", "falha ao resolver cotação", indice.sigla)
+  const fallback = indice.taxaAnualFallback
+  if (fallback !== null && fallback !== undefined && Number.isFinite(fallback)) {
+    return {
+      ok: true,
+      cotacao: montarCotacao(
+        indice.sigla,
+        fallback,
+        `fallback (${cotacaoError.code}: ${cotacaoError.mensagem})`,
+        agoraMs,
+      ),
+      tentativas,
+    }
+  }
+  return { ok: false, error: cotacaoError, tentativas }
+}
+
+/**
+ * Uma tentativa completa de resolução na fonte (SGS): busca a série, aplica
+ * o critério por tipo de valor (taxa anual direta / % d.i. anualizada /
+ * variação histórica 12m) e monta a cotação. Lança `CotacaoError` — a
+ * classificação transitória/não-transitória (`transitoria`) define se o
+ * chamador deve retentar. Não lida com cache nem fallback (responsabilidade
+ * de `resolverCotacao`).
+ */
+async function tentarFonte(
+  sigla: string,
+  mapeamento: MapeamentoSerieSgs | undefined,
+  usaVariacaoHistorica: boolean,
+  fetchFn: FetchDeCotacao,
+  timeoutMs: number,
+  agoraMs: number,
+): Promise<Cotacao> {
+  if (!mapeamento) {
+    throw novoErro(
+      "DADO_AUSENTE",
+      `sigla '${sigla}' sem mapeamento de série SGS`,
+      sigla,
+    )
+  }
+
+  const origem = `Banco Central (SGS) — série ${mapeamento.serie} (${mapeamento.descricao})`
+  const quantidade =
+    mapeamento.tipoValor === "NIVEL" || usaVariacaoHistorica
+      ? QUANTIDADE_OBSERVACOES_NIVEL
+      : 2
+
+  const observacoes = await observarSerieSgs(
+    mapeamento.serie,
+    quantidade,
+    fetchFn,
+    timeoutMs,
+  )
+
+  if (mapeamento.tipoValor === "NIVEL" || usaVariacaoHistorica) {
+    // Critério Ibovespa (RF-5): variação do nível entre o último ponto e o
+    // último ponto até 12 meses antes. Documentado em DECISOES-COTACOES.md §4.
+    const ultimo = observacoes[observacoes.length - 1]
+    const anterior = selecionarValorHa12Meses(observacoes)
+    if (!ultimo || !anterior || anterior.valor === 0) {
+      throw novoErro(
+        "DADO_AUSENTE",
+        "série de nível sem dados suficientes para variação de 12 meses",
+        origem,
+      )
+    }
+    return montarCotacao(
+      sigla,
+      calcularVariacaoHistorica(ultimo.valor, anterior.valor),
+      origem,
+      agoraMs,
+    )
+  }
+
+  const ultimo = observacoes[observacoes.length - 1]
+  if (!ultimo) {
+    throw novoErro("DADO_AUSENTE", "série sem observações", origem)
+  }
+  const taxaAnual =
+    mapeamento.tipoValor === "TAXA_DI"
+      ? anualizarTaxaDi(ultimo.valor)
+      : ultimo.valor
+  return montarCotacao(sigla, taxaAnual, origem, agoraMs)
 }
