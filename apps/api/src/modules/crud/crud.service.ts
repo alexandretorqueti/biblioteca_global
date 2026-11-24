@@ -12,6 +12,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -30,6 +31,11 @@ import {
 } from "../../common/erros"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "./project-db.factory"
 import { SCHEMA_REGISTRY, type SchemaRegistry } from "./schema-registry"
+import {
+  CRUD_ESCOPO_EXTENSIONS,
+  type ContextoEscopoCrud,
+  type ExtensaoEscopoCrud,
+} from "./escopo/escopo-crud.extension"
 import {
   camposPivotDoResource,
   zodParaInsert,
@@ -92,6 +98,12 @@ export class CrudService {
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
     @Inject(ConfigService) private readonly configService: ConfigService,
     @Optional() @Inject(RealtimeService) private readonly realtime?: RealtimeService,
+    /**
+     * Extensões de escopo por projeto (tenancy intra-projeto). Opcionais:
+     * sem registro para o slug da sessão → comportamento 100% inalterado.
+     */
+    @Optional() @Inject(CRUD_ESCOPO_EXTENSIONS)
+    private readonly extensoesEscopo?: ExtensaoEscopoCrud[],
   ) {
     this.consoleUrl =
       this.configService.get<string>("OPENCLAW_CONSOLE_URL") ||
@@ -102,6 +114,26 @@ export class CrudService {
       this.configService.get<string>("MOTOR_DEV_URL") ||
       ""
     ).replace(/\/$/, "")
+  }
+
+  /** Extensão de escopo registrada para o slug (undefined = projeto sem tenancy custom). */
+  private extensaoPara(slug: string): ExtensaoEscopoCrud | undefined {
+    return this.extensoesEscopo?.find((extensao) => extensao.slug === slug)
+  }
+
+  /**
+   * Contexto de negócio da sessão para projetos com extensão de escopo.
+   * `escopoOrganizacao` é o valor injetado pelo guard de tenancy na request
+   * (req.escopoOrganizacao) — tipado como unknown aqui para manter o módulo
+   * genérico desacoplado dos tipos do projeto; a extensão valida e traduz.
+   */
+  private contextoDoEscopo(
+    projeto: ProjetoResumo,
+    escopoOrganizacao: unknown,
+  ): { extensao: ExtensaoEscopoCrud; ctx: ContextoEscopoCrud } | undefined {
+    const extensao = this.extensaoPara(projeto.slug)
+    if (!extensao) return undefined
+    return { extensao, ctx: extensao.contextoDaSessao(escopoOrganizacao) }
   }
 
   /** Resolve a tabela na whitelist do projeto; 404 fora dela. */
@@ -402,6 +434,7 @@ export class CrudService {
     projeto: ProjetoResumo,
     resource: string,
     params: CrudListParams,
+    escopoOrganizacao?: unknown,
   ): Promise<PaginatedResult<Record<string, unknown>>> {
     const tabela = this.resolverTabela(projeto, resource)
 
@@ -416,6 +449,12 @@ export class CrudService {
       const coluna = this.colunaDaTabela(tabela, nome)
       return eq(coluna as never, this.valorParaColuna(coluna, valor) as never)
     })
+    // Tenancy intra-projeto: filtro row-level adicional (extensão por slug).
+    const escopo = this.contextoDoEscopo(projeto, escopoOrganizacao)
+    if (escopo) {
+      const condicaoEscopo = escopo.extensao.condicaoLeitura(resource, tabela, escopo.ctx)
+      if (condicaoEscopo) condicoes.push(condicaoEscopo as never)
+    }
     const busca = this.condicaoDeBusca(tabela, params.search)
     const condicoesFinais = busca ? [...condicoes, busca] : condicoes
     const onde = condicoesFinais.length > 0 ? and(...(condicoesFinais as never[])) : undefined
@@ -488,13 +527,22 @@ export class CrudService {
     projeto: ProjetoResumo,
     resource: string,
     id: number,
+    escopoOrganizacao?: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
+    // Tenancy intra-projeto: id de outra organização responde como não encontrado.
+    const escopo = this.contextoDoEscopo(projeto, escopoOrganizacao)
+    const condicaoEscopo = escopo
+      ? escopo.extensao.condicaoLeitura(resource, tabela, escopo.ctx)
+      : undefined
+    const onde = condicaoEscopo
+      ? and(eq(this.colunaId(tabela) as never, id as never), condicaoEscopo)
+      : eq(this.colunaId(tabela) as never, id as never)
     const db = await this.dbDoProjeto(projeto)
     const linhas = await db
       .select()
       .from(tabela)
-      .where(eq(this.colunaId(tabela) as never, id as never))
+      .where(onde)
       .limit(1)
     const linha = linhas.at(0)
     if (!linha) {
@@ -825,19 +873,30 @@ export class CrudService {
     campos: CampoPivot[],
     valores: Map<string, number[]>,
     paiId: number,
+    escopo?: { extensao: ExtensaoEscopoCrud; ctx: ContextoEscopoCrud },
   ): Promise<void> {
     for (const [campoNome, ids] of valores) {
       const campo = campos.find((c) => c.campo === campoNome)
       if (!campo) continue
       const colunaIdOposta = this.colunaId(campo.tabelaOposta)
       if (ids.length > 0) {
+        // Tenancy intra-projeto: ids do lado oposto também precisam estar no
+        // escopo da sessão (ex.: tags de outra organização são rejeitadas).
+        const condicaoOposta = escopo
+          ? escopo.extensao.condicaoPivotOposto(campo, escopo.ctx)
+          : undefined
+        const onde = condicaoOposta
+          ? and(inArray(colunaIdOposta as never, ids as never), condicaoOposta)
+          : inArray(colunaIdOposta as never, ids as never)
         const existentes = await db
           .select({ id: colunaIdOposta as never })
           .from(campo.tabelaOposta)
-          .where(inArray(colunaIdOposta as never, ids as never))
+          .where(onde)
         if (existentes.length !== ids.length) {
           throw new BadRequestException(
-            `Campo "${campoNome}": há id inexistente em ${campo.resourceOposto}`,
+            escopo
+              ? `Campo "${campoNome}": há id inexistente ou fora do escopo da organização em ${campo.resourceOposto}`
+              : `Campo "${campoNome}": há id inexistente em ${campo.resourceOposto}`,
           )
         }
       }
@@ -914,14 +973,31 @@ export class CrudService {
     projeto: ProjetoResumo,
     resource: string,
     corpo: unknown,
+    escopoOrganizacao?: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
+    const escopo = this.contextoDoEscopo(projeto, escopoOrganizacao)
+    if (escopo) {
+      const bloqueio = escopo.extensao.operacaoBloqueada(resource, "create")
+      if (bloqueio) throw new ForbiddenException(bloqueio)
+    }
     const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
     const camposPivot = this.camposPivotDo(projeto, resource)
     const pivots = this.extrairPivots(corpo, camposPivot)
     const dependencia = tarefasMotor ? this.normalizarDependencias(pivots.payload) : { payload: pivots.payload as Record<string, unknown> }
     const { insert } = this.schemasDe(projeto, resource)
-    const parse = insert.safeParse(this.normalizarChaves(tabela, dependencia.payload))
+    // Tenancy intra-projeto: escrita força o escopo da sessão ANTES do Zod
+    // (organizacao_id obrigatório nunca depende do body).
+    const corpoNormalizado = this.normalizarChaves(tabela, dependencia.payload)
+    if (
+      escopo &&
+      typeof corpoNormalizado === "object" &&
+      corpoNormalizado !== null &&
+      !Array.isArray(corpoNormalizado)
+    ) {
+      escopo.extensao.prepararCorpo(tabela, corpoNormalizado, escopo.ctx, "create")
+    }
+    const parse = insert.safeParse(corpoNormalizado)
     if (!parse.success) {
       throw new BadRequestException({
         message: "Registro inválido",
@@ -935,6 +1011,11 @@ export class CrudService {
     const db = await this.dbDoProjeto(projeto)
     try {
       const valores = this.paraChavesDoDrizzle(tabela, parse.data as Record<string, unknown>)
+
+      // Tenancy intra-projeto: FKs precisam pertencer à organização da sessão.
+      if (escopo) {
+        await escopo.extensao.validarEscrita(db, tabela, valores, escopo.ctx, "create")
+      }
 
       // Tarefas são executadas pelo agente do projeto captado, não pelo
       // projeto da plataforma cujo banco está sendo usado. Conferir apenas a
@@ -990,10 +1071,10 @@ export class CrudService {
       }
 
       if (pivots.valores.size > 0) {
-        await this.sincronizarPivots(db, camposPivot, pivots.valores, Number(insertId))
+        await this.sincronizarPivots(db, camposPivot, pivots.valores, Number(insertId), escopo)
       }
 
-      const linha = await this.detalhar(projeto, resource, insertId)
+      const linha = await this.detalhar(projeto, resource, insertId, escopoOrganizacao)
       await this.publicarEventoCrud(projeto, resource, "created", linha)
       return linha
     } catch (erro: unknown) {
@@ -1012,14 +1093,29 @@ export class CrudService {
     resource: string,
     id: number,
     corpo: unknown,
+    escopoOrganizacao?: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
+    const escopo = this.contextoDoEscopo(projeto, escopoOrganizacao)
+    if (escopo) {
+      const bloqueio = escopo.extensao.operacaoBloqueada(resource, "update")
+      if (bloqueio) throw new ForbiddenException(bloqueio)
+    }
     const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
     const camposPivot = this.camposPivotDo(projeto, resource)
     const pivots = this.extrairPivots(corpo, camposPivot)
     const dependencia = tarefasMotor ? this.normalizarDependencias(pivots.payload) : { payload: pivots.payload as Record<string, unknown> }
     const { update } = this.schemasDe(projeto, resource)
-    const parse = update.safeParse(this.normalizarChaves(tabela, dependencia.payload))
+    const corpoNormalizado = this.normalizarChaves(tabela, dependencia.payload)
+    if (
+      escopo &&
+      typeof corpoNormalizado === "object" &&
+      corpoNormalizado !== null &&
+      !Array.isArray(corpoNormalizado)
+    ) {
+      escopo.extensao.prepararCorpo(tabela, corpoNormalizado, escopo.ctx, "update")
+    }
+    const parse = update.safeParse(corpoNormalizado)
     if (!parse.success) {
       throw new BadRequestException({
         message: "Registro inválido",
@@ -1037,14 +1133,18 @@ export class CrudService {
       throw new BadRequestException("Nenhum campo para atualizar")
     }
 
-    // Existe? (404 antes de atualizar)
-    const atual = await this.detalhar(projeto, resource, id)
+    // Existe? (404 antes de atualizar — com escopo, id de outra organização é 404)
+    const atual = await this.detalhar(projeto, resource, id, escopoOrganizacao)
     if (tarefasMotor && dependencia.ids !== undefined) {
       await this.validarDependenciasTarefa(await this.dbDoProjeto(projeto), Number(atual.projetoId ?? atual.projeto_id), id, dependencia.ids)
     }
 
     const db = await this.dbDoProjeto(projeto)
     try {
+      // Tenancy intra-projeto: FKs do update precisam pertencer à organização da sessão.
+      if (escopo) {
+        await escopo.extensao.validarEscrita(db, tabela, campos, escopo.ctx, "update")
+      }
       if (Object.keys(campos).length > 0) {
         await db
           .update(tabela)
@@ -1056,9 +1156,9 @@ export class CrudService {
         if (dependencia.ids.length > 0) await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: id, dependeDeTarefaId })))
       }
       if (pivots.valores.size > 0) {
-        await this.sincronizarPivots(db, camposPivot, pivots.valores, id)
+        await this.sincronizarPivots(db, camposPivot, pivots.valores, id, escopo)
       }
-      const linha = await this.detalhar(projeto, resource, id)
+      const linha = await this.detalhar(projeto, resource, id, escopoOrganizacao)
       await this.publicarEventoCrud(projeto, resource, "updated", linha)
       return linha
     } catch (erro: unknown) {
@@ -1073,12 +1173,18 @@ export class CrudService {
     projeto: ProjetoResumo,
     resource: string,
     id: number,
+    escopoOrganizacao?: unknown,
   ): Promise<void> {
     const tabela = this.resolverTabela(projeto, resource)
+    const escopo = this.contextoDoEscopo(projeto, escopoOrganizacao)
+    if (escopo) {
+      const bloqueio = escopo.extensao.operacaoBloqueada(resource, "delete")
+      if (bloqueio) throw new ForbiddenException(bloqueio)
+    }
     const db = await this.dbDoProjeto(projeto)
     // O registro é necessário para determinar o projeto/pai do evento de
-    // exclusão. A publicação permanece depois do DELETE bem-sucedido.
-    const linha = await this.detalhar(projeto, resource, id)
+    // exclusão (com escopo, id de outra organização é 404 antes do DELETE).
+    const linha = await this.detalhar(projeto, resource, id, escopoOrganizacao)
     const resultado = await db
       .delete(tabela)
       .where(eq(this.colunaId(tabela) as never, id as never))
