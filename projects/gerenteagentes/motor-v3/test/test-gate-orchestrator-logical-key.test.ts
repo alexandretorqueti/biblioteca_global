@@ -98,9 +98,9 @@ describe('TestGateOrchestrator — chave lógica do outbox', () => {
     // A chave lógica (type, task_id, correlation_id) não colide mais.
     const logicalKeys = inserts.map(i => `${i.params[1]}-${i.params[3]}-${i.params[6]}`)
     expect(new Set(logicalKeys).size).toBe(2)
-    // message_id segue deduplicável por origem+fase (request_message_id).
-    expect(inserts[0]!.params[0]).toBe('3973ea3f-msg:pre_deploy:task')
-    expect(inserts[1]!.params[0]).toBe('59a34d66-msg:pre_deploy:task')
+    // message_id segue deduplicável por origem+fase+commit (request_message_id).
+    expect(inserts[0]!.params[0]).toBe('3973ea3f-msg:pre_deploy:task:abc123')
+    expect(inserts[1]!.params[0]).toBe('59a34d66-msg:pre_deploy:task:abc123')
     // Causation mantém o rastreio da mensagem de origem.
     expect(inserts[0]!.params[7]).toBe('3973ea3f-msg')
   })

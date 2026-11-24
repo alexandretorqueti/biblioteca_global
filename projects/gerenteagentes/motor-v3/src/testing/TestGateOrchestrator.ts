@@ -19,9 +19,18 @@ export class TestGateOrchestrator {
 
   /** Enfileira sem esperar: continuação deve reagir a TEST_RUN_COMPLETED. */
   async enqueue(input: TestGateInput, source: QueueMessage): Promise<number> {
-    // A mesma mensagem de origem + fase representa a mesma continuação.
-    // Reentrega/recovery não pode criar um segundo job de gate.
-    const requestMessageId = `${source.messageId}:${input.phase}:${input.subtaskId ?? 'task'}`.slice(0, 100)
+    // A mesma mensagem de origem + fase + COMMIT representa a mesma continuação.
+    // Reentrega/recovery não pode criar um segundo job de gate para o mesmo
+    // estado validado. O commitSha faz parte da chave porque o resultado do
+    // gate é função do estado do workspace: sem ele, uma revalidação pós-correção
+    // (ex.: BaselinePreflightRecovery.complete() re-pedindo phase 'baseline' com a
+    // mesma mensagem de origem após o Monitor commitar a correção) colidia com o
+    // job ANTERIOR já falho e devolvia o resultado obsoleto — bloqueio falso
+    // baseline_preflight_failed (incidente 2026-11-24, task-p2-1100/subtarefa 1581:
+    // baseline real verde no job 1350, mas a revalidação recebeu o resultado do
+    // job 1349, vermelho e pré-correção).
+    const commitKey = input.commitSha ? `:${input.commitSha.slice(0, 12)}` : ''
+    const requestMessageId = `${source.messageId}:${input.phase}:${input.subtaskId ?? 'task'}${commitKey}`.slice(0, 100)
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()

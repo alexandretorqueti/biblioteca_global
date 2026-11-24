@@ -26,3 +26,7 @@ biblioteca_old/**/node_modules/
 
 # Testbed E2E (descontinuado)
 .motor-v3-worktrees/
+
+# Lock efêmero de instalação npm do motor-v3 (runtime, nunca versionar —
+# o git add -A do persistBaselineCorrection já o commitou por engano: 67337a7c)
+.motor-v3-npm-install.lock/
