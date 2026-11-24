@@ -88,6 +88,29 @@ export interface ExtensaoEscopoCrud {
     operacao: OperacaoEscopoCrud,
   ): string | undefined
 
+  /**
+   * Liberação de CRIAÇÃO além da regra padrão da plataforma
+   * (admin/gerente/operador). `true` abre o resource ao perfil da sessão
+   * (ex.: "qualquer usuário cria tarefa" no gestao-de-tarefas-global —
+   * inclui operador/visualizador autenticados no escopo). undefined/false
+   * mantém a regra padrão — outros projetos/perfis ficam inalterados.
+   */
+  perfilPodeCriar?(resource: string, perfil: string): boolean
+
+  /**
+   * Motivo de bloqueio da ATUALIZAÇÃO de um registro específico, avaliado com
+   * o registro atual em mãos (depois do 404 de escopo, antes da gravação) —
+   * `CrudService` converte o motivo em 409 (ConflictException). Regras por
+   * estado do registro (ex.: tarefa fechada só evolui pela máquina de
+   * estados) pertencem aqui, não ao CrudService. undefined = permitida.
+   */
+  motivoBloqueioAtualizacao?(
+    resource: string,
+    tabela: MySqlTable,
+    linhaAtual: Record<string, unknown>,
+    ctx: ContextoEscopoCrud,
+  ): string | undefined
+
   /** Condição de escopo para a checagem de existência do lado oposto de pivot. */
   condicaoPivotOposto(
     campo: CampoPivot,

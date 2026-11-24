@@ -134,6 +134,40 @@ describe("GestaoTarefasGlobalEscopo — prepararCorpo (escrita força a sessão)
     expect("organizacao_id" in semOrg).toBe(false)
   })
 
+  it("create de tarefa: criado_por_id ausente resolve para o colaborador da sessão", () => {
+    const corpo: Record<string, unknown> = { titulo: "T", area_id: 5, responsavel_id: 9 }
+    extensao.prepararCorpo(tabelas.tarefas!, corpo, ctx, "create")
+    expect(corpo.criado_por_id).toBe(7)
+    expect(corpo.organizacao_id).toBe(10)
+    // status não é injetado pelo CRUD — o default "aberta" vem do schema.
+    expect("status" in corpo).toBe(false)
+  })
+
+  it("create de tarefa: criado_por_id explícito no body é preservado", () => {
+    const corpo: Record<string, unknown> = { titulo: "T", criado_por_id: 42 }
+    extensao.prepararCorpo(tabelas.tarefas!, corpo, ctx, "create")
+    expect(corpo.criado_por_id).toBe(42)
+  })
+
+  it("create/update com status no corpo → recusado com erro claro (qualquer perfil)", () => {
+    for (const operacao of ["create", "update"] as const) {
+      for (const perfil of ["admin", "gerente", "operador", "visualizador"]) {
+        const corpo: Record<string, unknown> = { titulo: "T", status: "concluida" }
+        expect(() =>
+          extensao.prepararCorpo(
+            tabelas.tarefas!,
+            corpo,
+            { organizacaoId: 10, colaboradorId: 7, perfil },
+            operacao,
+          ),
+        ).toThrow(/status.*não é editável pelo CRUD/i)
+      }
+    }
+    // Tabelas sem a coluna status não são afetadas pela regra.
+    const areas: Record<string, unknown> = { nome: "A", status: "qualquer" }
+    expect(() => extensao.prepararCorpo(tabelas.areas!, areas, ctx, "create")).not.toThrow()
+  })
+
   it("tabelas sem organizacao_id: corpo intocado", () => {
     const corpo: Record<string, unknown> = { texto: "mensagem" }
     extensao.prepararCorpo(tabelas.mensagens_tarefa!, corpo, ctx, "create")
@@ -204,6 +238,236 @@ describe("GestaoTarefasGlobalEscopo — operacaoBloqueada e pivôs", () => {
     const { sql, params } = render(extensao.condicaoPivotOposto(campoTags!, ctx))
     expect(sql).toContain("`organizacao_id` = ?")
     expect(params).toEqual([10])
+  })
+})
+
+describe("GestaoTarefasGlobalEscopo — edição de tarefa por status (REQ-F-019)", () => {
+  it("status 'aberta' → edição genérica permitida", () => {
+    expect(
+      extensao.motivoBloqueioAtualizacao!("tarefas", tabelas.tarefas!, { id: 1, status: "aberta" }, ctx),
+    ).toBeUndefined()
+  })
+
+  it("demais status → bloqueio com mensagem clara citando o status", () => {
+    for (const status of [
+      "delegada",
+      "concluida",
+      "precisa_informacoes",
+      "aguardando_terceiro",
+      "cancelada",
+    ]) {
+      const motivo = extensao.motivoBloqueioAtualizacao!(
+        "tarefas",
+        tabelas.tarefas!,
+        { id: 1, status },
+        ctx,
+      )
+      expect(motivo).toBeTruthy()
+      expect(motivo).toContain(status)
+      expect(motivo).toContain("só evolui pelo fluxo da tarefa")
+    }
+  })
+
+  it("resource sem status (areas/tags) nunca é bloqueado", () => {
+    expect(
+      extensao.motivoBloqueioAtualizacao!("areas", tabelas.areas!, { id: 1 }, ctx),
+    ).toBeUndefined()
+    expect(
+      extensao.motivoBloqueioAtualizacao!("tags", tabelas.tags!, { id: 1, status: "concluida" }, ctx),
+    ).toBeUndefined()
+  })
+
+  it("linha sem status (defesa) não bloqueia", () => {
+    expect(
+      extensao.motivoBloqueioAtualizacao!("tarefas", tabelas.tarefas!, { id: 1 }, ctx),
+    ).toBeUndefined()
+  })
+
+  it("perfilPodeCriar: tarefas para qualquer perfil; demais resources não", () => {
+    expect(extensao.perfilPodeCriar!("tarefas", "visualizador")).toBe(true)
+    expect(extensao.perfilPodeCriar!("tarefas", "admin")).toBe(true)
+    expect(extensao.perfilPodeCriar!("areas", "visualizador")).toBe(false)
+    expect(extensao.perfilPodeCriar!("colaboradores", "visualizador")).toBe(false)
+  })
+})
+
+describe("CrudService — wiring da regra de status/criação (REQ-F-019, com db fake)", () => {
+  const contexto = {
+    tipo: "colaborador",
+    organizacaoId: 10,
+    colaboradorId: 7,
+    perfil: "admin",
+  }
+
+  /** Db fake mínimo: select por tabela, update/insert com registro das escritas. */
+  function dbFakeEstado(linhaTarefa: Record<string, unknown>) {
+    const atualizacoes: Array<Record<string, unknown>> = []
+    const inseridos: Array<Record<string, unknown>> = []
+    const db = {
+      select: () => ({
+        from: (tabela: MySqlTable) => ({
+          where: () => {
+            const linhas =
+              nomeTabela(tabela) === "tarefas" ? [linhaTarefa] : [{ id: 1 }]
+            return Object.assign(Promise.resolve(linhas), {
+              limit: async () => linhas,
+            })
+          },
+        }),
+      }),
+      update: () => ({
+        set: (campos: Record<string, unknown>) => {
+          atualizacoes.push(campos)
+          Object.assign(linhaTarefa, campos)
+          return { where: async () => [{ affectedRows: 1 }] }
+        },
+      }),
+      insert: () => ({
+        values: async (valores: Record<string, unknown>) => {
+          inseridos.push(valores)
+          Object.assign(linhaTarefa, valores)
+          return [{ insertId: 123 }]
+        },
+      }),
+    }
+    return { db: db as unknown as ProjetoDb, atualizacoes, inseridos }
+  }
+
+  function montarComDb(linhaTarefa: Record<string, unknown>) {
+    const { db, atualizacoes, inseridos } = dbFakeEstado(linhaTarefa)
+    const registry: SchemaRegistry = {
+      tabelasDoProjeto: (slug: string) =>
+        slug === SLUG_GESTAO_TAREFAS_GLOBAL ? tabelas : undefined,
+      projetosCarregados: () => [SLUG_GESTAO_TAREFAS_GLOBAL],
+    }
+    const factory = { obter: async () => db } as unknown as ProjectDbFactory
+    const configService = { get: () => undefined } as unknown as ConfigService
+    const service = new CrudService(
+      registry,
+      factory,
+      configService,
+      new RealtimeService(),
+      [extensao],
+    )
+    return { service, atualizacoes, inseridos }
+  }
+
+  /** Service sem DB acessível — prova que o bloqueio ocorre antes de gravar. */
+  function montarSemDb() {
+    const registry: SchemaRegistry = {
+      tabelasDoProjeto: (slug: string) =>
+        slug === SLUG_GESTAO_TAREFAS_GLOBAL ? tabelas : undefined,
+      projetosCarregados: () => [SLUG_GESTAO_TAREFAS_GLOBAL],
+    }
+    const factory = {
+      obter: async () => {
+        throw new Error("database não deveria ser acionado neste teste")
+      },
+    } as unknown as ProjectDbFactory
+    const configService = { get: () => undefined } as unknown as ConfigService
+    return new CrudService(
+      registry,
+      factory,
+      configService,
+      new RealtimeService(),
+      [extensao],
+    )
+  }
+
+  function projetoPerfil(perfil: "admin" | "gerente" | "operador" | "visualizador") {
+    return {
+      id: 8496,
+      nome: "Gestão",
+      slug: SLUG_GESTAO_TAREFAS_GLOBAL,
+      perfil,
+    } as const
+  }
+
+  it("PUT em tarefa com status ≠ 'aberta' → 409 com mensagem clara, sem gravar (qualquer perfil)", async () => {
+    for (const perfil of ["admin", "gerente", "operador"] as const) {
+      const { service, atualizacoes } = montarComDb({ id: 1, status: "concluida", titulo: "T" })
+      await expect(
+        service.atualizar(
+          projetoPerfil(perfil),
+          "tarefas",
+          1,
+          { titulo: "tentativa" },
+          { ...contexto, perfil },
+        ),
+      ).rejects.toThrow(/edição indisponível: tarefa com status "concluida" só evolui pelo fluxo da tarefa/)
+      expect(atualizacoes).toHaveLength(0)
+    }
+  })
+
+  it("PUT em tarefa 'aberta' → grava normalmente", async () => {
+    const { service, atualizacoes } = montarComDb({ id: 2, status: "aberta", titulo: "T" })
+    const linha = await service.atualizar(
+      projetoPerfil("operador"),
+      "tarefas",
+      2,
+      { titulo: "editada" },
+      { ...contexto, perfil: "operador" },
+    )
+    expect(atualizacoes).toHaveLength(1)
+    expect(atualizacoes[0]).toEqual({ titulo: "editada" })
+    expect(linha.titulo).toBe("editada")
+  })
+
+  it("PUT com status no corpo → 400 antes de qualquer gravação", async () => {
+    const service = montarSemDb()
+    await expect(
+      service.atualizar(
+        projetoPerfil("admin"),
+        "tarefas",
+        1,
+        { status: "concluida" },
+        contexto,
+      ),
+    ).rejects.toThrow(BadRequestException)
+  })
+
+  it("POST de tarefa por QUALQUER perfil do escopo passa pelo gate e grava com organização/criador da sessão", async () => {
+    for (const perfil of ["admin", "gerente", "operador", "visualizador"] as const) {
+      const linhaTarefa: Record<string, unknown> = { id: 123, status: "aberta", titulo: "T" }
+      const { service, inseridos } = montarComDb(linhaTarefa)
+      await service.criar(
+        projetoPerfil(perfil),
+        "tarefas",
+        { titulo: "T", area_id: 5, responsavel_id: 9 },
+        { ...contexto, perfil },
+      )
+      expect(inseridos).toHaveLength(1)
+      const valores = inseridos[0] as Record<string, unknown>
+      // organizacao forçada pela sessão; criador resolvido do colaborador da sessão;
+      // status não é injetado — default 'aberta' pertence ao schema (insertable false).
+      expect(valores.organizacaoId).toBe(10)
+      expect(valores.criadoPorId).toBe(7)
+      expect("status" in valores).toBe(false)
+    }
+  })
+
+  it("POST com status no corpo → 400 (transição só pelo fluxo)", async () => {
+    const service = montarSemDb()
+    await expect(
+      service.criar(
+        projetoPerfil("admin"),
+        "tarefas",
+        { titulo: "T", area_id: 5, responsavel_id: 9, status: "concluida" },
+        contexto,
+      ),
+    ).rejects.toThrow(BadRequestException)
+  })
+
+  it("POST de outro resource por visualizador mantém a regra padrão → 403", async () => {
+    const service = montarSemDb()
+    await expect(
+      service.criar(
+        projetoPerfil("visualizador"),
+        "areas",
+        { nome: "Área X" },
+        { ...contexto, perfil: "visualizador" },
+      ),
+    ).rejects.toThrow(ForbiddenException)
   })
 })
 

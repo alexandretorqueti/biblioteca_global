@@ -2,7 +2,9 @@
  * CrudController — rotas genéricas /api/:slug/:resource (PoC §6.2).
  * Registrado por ÚLTIMO no AppModule: rotas específicas (auth, usuarios,
  * projetos) têm precedência; resources reservados são bloqueados no service.
- * Escrita exige perfil admin/gerente/operador; visualizador só lê.
+ * Escrita exige perfil admin/gerente/operador; visualizador só lê (na CRIAÇÃO
+ * a regra é avaliada no service, onde extensões de escopo podem liberar
+ * perfis adicionais por resource — ver `CrudController.criar`).
  *
  * Rotas namespaced: /api/<slug>/<resource> (ex.: /api/taqui/tarefas).
  * O slug é validado contra o schema registry; resource contra a whitelist
@@ -123,9 +125,15 @@ export class CrudController {
     return this.service.detalhar(projeto, resource, Number(idRaw), req.escopoOrganizacao)
   }
 
+  /**
+   * Criação: a regra de perfil é aplicada no CrudService (e não via @Roles)
+   * porque extensões de escopo por projeto podem liberar criação a perfis
+   * adicionais — ex.: "qualquer usuário cria tarefa" no
+   * gestao-de-tarefas-global abre POST ao perfil visualizador do escopo.
+   * Sem extensão, o service mantém exatamente a regra padrão
+   * (admin/gerente/operador).
+   */
   @Post(":slug/:resource")
-  @UseGuards(RolesGuard)
-  @Roles("admin", "gerente", "operador")
   criar(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,

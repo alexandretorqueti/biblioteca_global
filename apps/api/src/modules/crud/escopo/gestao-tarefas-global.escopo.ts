@@ -21,6 +21,13 @@
  *   gravam (create/update rejeitados com 400 claro); admin/gerente leem e
  *   gravam normalmente. A barreira é o backend — independentemente de
  *   hiddenColumns/roleFilter do front.
+ * - Edição de tarefa por status (REQ-F-019, subtarefa 5): update em tarefa com
+ *   status ≠ 'aberta' é rejeitado com 409 (motivo retornado ao CrudService via
+ *   `motivoBloqueioAtualizacao`); `status` nunca é gravável pelo CRUD (corpo
+ *   com a chave → 400, transições pertencem à máquina de estados — macro 3).
+ *   A criação permanece aberta a qualquer perfil autenticado do escopo: default
+ *   'aberta' vem do schema, `organizacao_id` é forçado pela sessão e
+ *   `criado_por_id` ausente no body resolve para o colaborador da sessão.
  *
  * Registrada em crud.module no token CRUD_ESCOPO_EXTENSIONS — o CrudService
  * só a consulta quando o slug da sessão é `gestao-de-tarefas-global`; o
@@ -61,6 +68,19 @@ const PROP_ORGANIZACAO = "organizacaoId"
  */
 const CAMPOS_SENSIVEIS = ["cpf", "telefone", "email"] as const
 
+/**
+ * Coluna de status da tarefa (nome de coluna = nome de propriedade). Não é
+ * gravável pelo CRUD genérico: insertable/editable false na config (front) e
+ * rejeição explícita no corpo (backend) — transições só pelo fluxo custom.
+ */
+const COLUNA_STATUS = "status"
+
+/** Nome da coluna de criação do autor na tabela tarefas. */
+const COLUNA_CRIADO_POR = "criado_por_id"
+
+/** Único status cuja edição genérica é permitida (REQ-F-019). */
+const STATUS_EDITAVEL = "aberta"
+
 /** Perfis SEM acesso a dados sensíveis (admin/gerente têm acesso total). */
 const PERFIS_SEM_SENSIVEIS = new Set(["operador", "visualizador"])
 
@@ -81,6 +101,11 @@ function colunaOrganizacao(tabela: MySqlTable): Column | undefined {
 
 function propDaColuna(tabela: MySqlTable, coluna: Column): string | undefined {
   return Object.entries(colunas(tabela)).find(([, c]) => c === coluna)?.[0]
+}
+
+/** A tabela é a de tarefas deste projeto (homônimas de outros slugs não chegam aqui). */
+function ehTabelaTarefas(tabela: MySqlTable): boolean {
+  return getTableName(tabela) === getTableName(schemaGestao.tarefas)
 }
 
 /**
@@ -147,6 +172,25 @@ export class GestaoTarefasGlobalEscopo implements ExtensaoEscopoCrud {
     ctx: ContextoEscopoCrud,
     operacao: "create" | "update",
   ): void {
+    // Regra de status da tarefa (REQ-F-019, subtarefa 5): a chave `status`
+    // nunca é gravável pelo CRUD genérico — create/update com a chave no
+    // corpo são recusados com erro claro (a máquina de estados de delegação/
+    // devolução pertence ao fluxo custom). Vale para qualquer perfil.
+    if (ehTabelaTarefas(tabela) && COLUNA_STATUS in corpo) {
+      throw new BadRequestException(
+        `O campo "status" não é editável pelo CRUD de tarefas — as transições de status pertencem ao fluxo da tarefa.`,
+      )
+    }
+    // Criação de tarefa é aberta a qualquer perfil do escopo: autor ausente
+    // no body resolve para o colaborador da sessão (o default do schema é
+    // status "aberta"; organizacao_id é forçado logo abaixo).
+    if (
+      operacao === "create" &&
+      ehTabelaTarefas(tabela) &&
+      corpo[COLUNA_CRIADO_POR] === undefined
+    ) {
+      corpo[COLUNA_CRIADO_POR] = ctx.colaboradorId
+    }
     if (!colunaOrganizacao(tabela)) return
     if (operacao === "create") {
       // Criação sempre pertence à organização da sessão — body é ignorado.
@@ -224,6 +268,38 @@ export class GestaoTarefasGlobalEscopo implements ExtensaoEscopoCrud {
         "de administração da plataforma — colaboradores não criam/removem " +
         "organizações pelo CRUD."
       )
+    }
+    return undefined
+  }
+
+  /**
+   * Criação de tarefa é aberta a QUALQUER perfil autenticado no escopo da
+   * organização (inclui operador/visualizador — critério "qualquer usuário
+   * cria tarefa"). Demais resources mantêm a regra padrão da plataforma.
+   */
+  perfilPodeCriar(resource: string, perfil: string): boolean {
+    void perfil
+    return resource === getTableName(schemaGestao.tarefas)
+  }
+
+  /**
+   * Edição genérica de tarefa somente com status 'aberta' (REQ-F-019,
+   * subtarefa 5). Tarefa em outro status responde 409 com mensagem clara —
+   * a evolução do registro pertence à máquina de estados (fluxo custom).
+   * Independe de perfil (admin incluído) e de resource de outro domínio.
+   */
+  motivoBloqueioAtualizacao(
+    resource: string,
+    tabela: MySqlTable,
+    linhaAtual: Record<string, unknown>,
+    ctx: ContextoEscopoCrud,
+  ): string | undefined {
+    void resource
+    void ctx
+    if (!ehTabelaTarefas(tabela)) return undefined
+    const status = linhaAtual[COLUNA_STATUS]
+    if (typeof status === "string" && status !== STATUS_EDITAVEL) {
+      return `edição indisponível: tarefa com status "${status}" só evolui pelo fluxo da tarefa`
     }
     return undefined
   }

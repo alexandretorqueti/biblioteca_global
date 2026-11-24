@@ -66,6 +66,14 @@ type DbDoProjeto = Awaited<ReturnType<ProjectDbFactory["obter"]>>
  */
 export const VIRTUAL_RESOURCE_OPENCLAW_AGENTES = "__openclaw_agentes__"
 
+/**
+ * Perfis com permissão padrão de criação no CRUD genérico (mesma lista do
+ * `@Roles("admin", "gerente", "operador")` das demais rotas de escrita).
+ * Extensões de escopo podem liberar perfis adicionais por resource via
+ * `perfilPodeCriar` (ex.: tarefas/visualizador no gestao-de-tarefas-global).
+ */
+const PERFIS_PODEM_CRIAR: readonly string[] = ["admin", "gerente", "operador"]
+
 export interface CrudListParams {
   page?: number
   pageSize?: number
@@ -1007,6 +1015,14 @@ export class CrudService {
       const bloqueio = escopo.extensao.operacaoBloqueada(resource, "create")
       if (bloqueio) throw new ForbiddenException(bloqueio)
     }
+    // Regra de perfil para criação: padrão da plataforma (admin/gerente/
+    // operador) com liberação por extensão de escopo quando registrada
+    // (ex.: tarefas para qualquer perfil do escopo no gestao-de-tarefas-global).
+    const liberadoPelaExtensao =
+      escopo?.extensao.perfilPodeCriar?.(resource, projeto.perfil) === true
+    if (!liberadoPelaExtensao && !PERFIS_PODEM_CRIAR.includes(projeto.perfil)) {
+      throw new ForbiddenException("Perfil insuficiente para esta operação")
+    }
     const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
     const camposPivot = this.camposPivotDo(projeto, resource)
     const pivots = this.extrairPivots(corpo, camposPivot)
@@ -1177,6 +1193,17 @@ export class CrudService {
 
     // Existe? (404 antes de atualizar — com escopo, id de outra organização é 404)
     const atual = await this.detalhar(projeto, resource, id, escopoOrganizacao)
+    // Regra por estado do registro (extensão de escopo): ex.: tarefa fechada
+    // só evolui pelo fluxo custom — motivo → 409 claro (antes de gravar).
+    if (escopo) {
+      const motivo = escopo.extensao.motivoBloqueioAtualizacao?.(
+        resource,
+        tabela,
+        atual,
+        escopo.ctx,
+      )
+      if (motivo) throw new ConflictException(motivo)
+    }
     if (tarefasMotor && dependencia.ids !== undefined) {
       await this.validarDependenciasTarefa(await this.dbDoProjeto(projeto), Number(atual.projetoId ?? atual.projeto_id), id, dependencia.ids)
     }
