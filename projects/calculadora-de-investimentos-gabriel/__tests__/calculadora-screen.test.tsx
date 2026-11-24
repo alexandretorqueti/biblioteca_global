@@ -19,6 +19,7 @@ import CalculadoraScreen, {
   componentId,
   formatarBRL,
   formatarTaxaMensal,
+  mensagemErroAmigavel,
   parsearNumeroInput,
   parsearPrazoAnos,
   taxaAnualDeCadastro,
@@ -164,6 +165,13 @@ describe("CalculadoraScreen — utilidades puras", () => {
     expect(taxaAnualDeCadastro({ taxaAnual: "13.6500" })).toBe(13.65)
     expect(taxaAnualDeCadastro({ taxaAnual: "0" })).toBeNull()
     expect(taxaAnualDeCadastro({})).toBeNull()
+  })
+
+  it("mensagens de erro amigáveis por código (nenhum código cru vaza para a tela)", () => {
+    expect(mensagemErroAmigavel("TIMEOUT")).toMatch(/demorou para responder/i)
+    expect(mensagemErroAmigavel("DADO_AUSENTE")).toMatch(/não retornou dados/i)
+    expect(mensagemErroAmigavel("FONTE_INDISPONIVEL")).toMatch(/indisponível/i)
+    expect(mensagemErroAmigavel("DESCONHECIDO_XYZ")).toMatch(/indisponível/i)
   })
 
   it("formata BRL e taxa mensal em pt-BR", () => {
@@ -362,16 +370,33 @@ describe("CalculadoraScreen — formulário e resultado", () => {
     render(<CalculadoraScreen />)
     await selecionarIndice("CDI")
 
-    expect(await screen.findByTestId("alerta-fallback")).toBeInTheDocument()
+    const alerta = await screen.findByTestId("alerta-fallback")
+    expect(alerta).toBeInTheDocument()
+    expect(alerta.textContent).toContain("taxa do cadastro")
+    // Nenhum erro cru/código interno vaza para a tela.
+    expect(alerta.textContent).not.toMatch(
+      /FONTE_INDISPONIVEL|TIMEOUT|DADO_AUSENTE|HTTP \d+/i,
+    )
+    // O indicador fica também junto ao campo de taxa (helperText).
+    expect(screen.getByText(/Em uso: taxa do cadastro/i)).toBeInTheDocument()    // Tela segue totalmente utilizável: cálculo funciona com o fallback.
     const taxaMensalFallback = converterAnualParaMensal(13.65) // taxaAnual do cadastro
     await waitFor(() =>
       expect(screen.getByTestId("taxa-mensal")).toHaveTextContent(
         formatarTaxaMensal(taxaMensalFallback),
       ),
     )
+    const esperado = calcularProjecao({
+      modo: "unico",
+      valorInicial: 1000,
+      prazoAnos: 1,
+      taxaMensalPercentual: taxaMensalFallback,
+    })
+    expect(screen.getByTestId("valor-final")).toHaveTextContent(
+      brlEsperado(esperado.valorFinal),
+    )
   })
 
-  it("erro tipado de cotação sem fallback não derruba a tela", async () => {
+  it("erro tipado de cotação sem fallback não derruba a tela e não vaza código cru", async () => {
     prepararLista([{ id: 9, nome: "Selic", sigla: "SELIC", taxaAnual: "0", ordem: 2 }])
     mockFetchSgs("", { ok: false, status: 500 })
     render(<CalculadoraScreen />)
@@ -379,10 +404,54 @@ describe("CalculadoraScreen — formulário e resultado", () => {
 
     const alerta = await screen.findByTestId("erro-cotacao")
     expect(alerta).toBeInTheDocument()
-    expect(alerta.textContent).toContain("FONTE_INDISPONIVEL")
+    // Mensagem amigável orienta preencher a taxa manual.
+    expect(alerta.textContent).toContain("taxa manual")
+    // Nenhum código interno cru vaza para a tela (diagnóstico em data-attr).
+    expect(alerta.textContent).not.toMatch(/FONTE_INDISPONIVEL|TIMEOUT|DADO_AUSENTE|HTTP \d+/i)
+    expect(alerta.getAttribute("data-error-code")).toBe("FONTE_INDISPONIVEL")
+    // Nenhum alerta de fallback (sem taxaAnualFallback no cadastro).
+    expect(screen.queryByTestId("alerta-fallback")).not.toBeInTheDocument()
     // Tela segue funcional: resultado vazio e formulário presente.
     expect(screen.getByTestId("valor-final")).toHaveTextContent("—")
     expect(screen.getByLabelText(/Taxa manual/i)).toBeInTheDocument()
+  })
+
+  it("loading e erro de cotação têm data-testid distintos e nunca aparecem simultâneos", async () => {
+    let resolverFetch!: (resposta: {
+      ok: boolean
+      status: number
+      text: () => Promise<string>
+    }) => void
+    let chamada = 0
+    const fetchFn = vi.fn(() => {
+      chamada++
+      if (chamada === 1) {
+        return new Promise<{ ok: boolean; status: number; text: () => Promise<string> }>(
+          (resolver) => {
+            resolverFetch = resolver
+          },
+        )
+      }
+      // Retry único (falha transitória) responde imediatamente.
+      return Promise.resolve({ ok: false, status: 503, text: async () => "" })
+    })
+    vi.stubGlobal("fetch", fetchFn)
+
+    render(<CalculadoraScreen />)
+    await selecionarIndice("CDI")
+
+    // Estado 1 — carregando: visível; erro/fallback NUNCA simultâneos.
+    expect(screen.getByTestId("carregando-cotacao")).toBeInTheDocument()
+    expect(screen.queryByTestId("erro-cotacao")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("alerta-fallback")).not.toBeInTheDocument()
+
+    // Estado 2 — falha (503 + retry 503, com fallback no cadastro): indicador
+    // visível; carregamento desaparece — nunca coexistem.
+    resolverFetch({ ok: false, status: 503, text: async () => "" })
+    await waitFor(() =>
+      expect(screen.getByTestId("alerta-fallback")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("carregando-cotacao")).not.toBeInTheDocument()
   })
 
   it("NENHUMA chamada de escrita: só GETs na plataforma e na fonte", async () => {

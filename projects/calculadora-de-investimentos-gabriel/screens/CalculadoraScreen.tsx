@@ -131,6 +131,23 @@ export function formatarTaxaMensal(taxaMensalPercentual: number): string {
 }
 
 /**
+ * Mensagem amigável por código de erro tipado (REQ-NF-003): NENHUM código
+ * cru (`TIMEOUT`, `FONTE_INDISPONIVEL`, `DADO_AUSENTE`) vaza para a tela —
+ * o código segue disponível em `data-error-code` para testes/diagnóstico.
+ */
+export function mensagemErroAmigavel(code: string): string {
+  switch (code) {
+    case "TIMEOUT":
+      return "A fonte de cotação demorou para responder."
+    case "DADO_AUSENTE":
+      return "A fonte de cotação não retornou dados para este índice."
+    case "FONTE_INDISPONIVEL":
+    default:
+      return "A fonte de cotação está indisponível no momento."
+  }
+}
+
+/**
  * Série exibida no gráfico (RF-7): apenas COLHE a série memoizada conforme a
  * visão — não recalcula nada. Anual: `prazoAnos` pontos; mensal:
  * `prazoAnos · 12` pontos (invariantes REQ-D-002 do motor).
@@ -312,14 +329,18 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
   const taxaManualInvalida =
     taxaManualTexto.trim() !== "" && !taxaManualValida
 
+  const usandoFallback = cotacao !== null && cotacao.fonte.startsWith("fallback")
+  const taxaDoFallback = usandoFallback ? cotacao.taxaAnual : null
+
   const origemTaxa = taxaManualValida
     ? "Taxa manual informada (ao ano, convertida por juros compostos)"
     : cotacao
-      ? `Índice ${cotacao.sigla} — cotação ${cotacao.fonte} em ${new Date(
-          cotacao.capturadaEm,
-        ).toLocaleString("pt-BR")}`
+      ? usandoFallback
+        ? `Índice ${cotacao.sigla} — taxa do cadastro do índice (cotação indisponível)`
+        : `Índice ${cotacao.sigla} — cotação ${cotacao.fonte} em ${new Date(
+            cotacao.capturadaEm,
+          ).toLocaleString("pt-BR")}`
       : "Selecione um índice ou informe uma taxa manual"
-  const usandoFallback = cotacao !== null && cotacao.fonte.startsWith("fallback")
 
   return (
     <Stack spacing={2} sx={{ p: { xs: 2, md: 3 }, maxWidth: 720 }} data-testid="calculadora-screen">
@@ -413,7 +434,9 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
             helperText={
               taxaManualInvalida
                 ? "Informe uma taxa ≥ 0"
-                : "Preenchida, tem prioridade sobre a cotação do índice e permite simular sem índice cadastrado"
+                : usandoFallback
+                  ? `Em uso: taxa do cadastro (${taxaDoFallback} % ao ano) — cotação indisponível. Preenchida, tem prioridade sobre ela`
+                  : "Preenchida, tem prioridade sobre a cotação do índice e permite simular sem índice cadastrado"
             }
           />
 
@@ -446,16 +469,22 @@ export default function CalculadoraScreen(_props: CustomScreenProps) {
       )}
 
       {erroCotacao && (
-        <Alert severity="warning" data-testid="erro-cotacao">
-          Não foi possível obter a cotação ({erroCotacao.code}):{" "}
-          {erroCotacao.mensagem} Preencha a taxa manual para continuar.
+        <Alert
+          severity="warning"
+          data-testid="erro-cotacao"
+          data-error-code={erroCotacao.code}
+        >
+          {mensagemErroAmigavel(erroCotacao.code)} Preencha a taxa manual
+          (% ao ano) para continuar a simulação.
         </Alert>
       )}
 
       {usandoFallback && (
         <Alert severity="info" data-testid="alerta-fallback">
-          Fonte de cotação indisponível; usando a taxa anual do cadastro do
-          índice como fallback.
+          Cotação indisponível no momento — usando a taxa do cadastro do
+          índice ({taxaDoFallback?.toLocaleString("pt-BR", { maximumFractionDigits: 4 })} %
+          ao ano). A simulação segue funcionando; preencha a taxa manual para
+          sobrescrever.
         </Alert>
       )}
 
