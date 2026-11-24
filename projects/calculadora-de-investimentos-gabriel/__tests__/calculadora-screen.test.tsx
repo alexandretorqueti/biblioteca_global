@@ -454,6 +454,51 @@ describe("CalculadoraScreen — formulário e resultado", () => {
     expect(screen.queryByTestId("carregando-cotacao")).not.toBeInTheDocument()
   })
 
+  it(
+    "mede o tempo do cálculo da projeção em ms, exposto em data-tempo-calculo-ms (<100ms até 600 meses)",
+    async () => {
+      render(<CalculadoraScreen />)
+      const taxa = await screen.findByLabelText(/Taxa manual/i)
+      await userEvent.type(taxa, "12")
+
+      const painel = await screen.findByTestId("resultado-simulacao")
+      // Critério: duração presente, numérica, finita, ≥ 0.
+      const bruto = painel.getAttribute("data-tempo-calculo-ms")
+      expect(bruto).toBeTruthy()
+      const tempoMs = Number(bruto)
+      expect(Number.isFinite(tempoMs)).toBe(true)
+      expect(tempoMs).toBeGreaterThanOrEqual(0)
+      // Critério: cenários típicos (prazos até 600 meses = 50 anos) < 100ms.
+      expect(tempoMs).toBeLessThan(100)
+
+      // Prazo máximo do requisito: 600 meses — a medição segue < 100ms e
+      // o resultado continua idêntico ao cálculo puro (a medição não altera
+      // a matemática de projecao.ts).
+      const prazo = screen.getByLabelText(/Prazo \(anos\)/i)
+      await userEvent.clear(prazo)
+      await userEvent.type(prazo, "50")
+      const esperado = calcularProjecao({
+        modo: "unico",
+        valorInicial: 1000,
+        prazoAnos: 50,
+        taxaAnualPercentual: 12,
+      })
+      const painelAtualizado = await screen.findByTestId("resultado-simulacao")
+      expect(painelAtualizado).toHaveTextContent(brlEsperado(esperado.valorFinal))
+      const tempo50Anos = Number(painelAtualizado.getAttribute("data-tempo-calculo-ms"))
+      expect(Number.isFinite(tempo50Anos)).toBe(true)
+      expect(tempo50Anos).toBeGreaterThanOrEqual(0)
+      expect(tempo50Anos).toBeLessThan(100)
+    },
+  )
+
+  it("sem projeção válida o atributo de tempo não está exposto (só quando há cálculo)", async () => {
+    render(<CalculadoraScreen />)
+    const painel = await screen.findByTestId("resultado-simulacao")
+    expect(painel.getAttribute("data-tempo-calculo-ms")).toBeNull()
+    expect(painel).toHaveTextContent("—")
+  })
+
   it("NENHUMA chamada de escrita: só GETs na plataforma e na fonte", async () => {
     const { chamadas } = mockFetchSgs(CDI_DIA_0035)
     render(<CalculadoraScreen />)
