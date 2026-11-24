@@ -2,7 +2,7 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import type { QueueMessage } from '../queue/index.js'
 import { insertOutboxMessage } from '../queue/index.js'
 import type { PrimitiveContext } from '../primitives/types.js'
-import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
+import type { WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { loadActiveBlocker, type ActiveBlockerRow } from './ActiveBlockerLookup.js'
@@ -147,8 +147,10 @@ export class MonitorResolutionConsumer {
       ].filter(Boolean).join('\n'))
       // Registra a execução do monitor em motor_active_executions para que
       // o WorkerActivityService possa reportar o Monitor como ativo.
+      // Modelo conhecido: o inicial da cadeia MONITOR; o heartbeat abaixo o
+      // atualiza quando o WorkerLauncher expuser o modelo do attempt corrente.
       const provider = await this.monitorProvider(context.project_slug)
-      if (!await this.registerMonitorExecution(monitorExecutionId, Number(context.database_task_id), blocker.subtarefa_id, provider)) {
+      if (!await this.registerMonitorExecution(monitorExecutionId, Number(context.database_task_id), blocker.subtarefa_id, provider, models[0] ?? null)) {
         await this.safeRecord(taskId, 'monitor_resolution_capacity_waiting', { blockId: blocker.id, provider })
         return
       }
@@ -176,7 +178,21 @@ export class MonitorResolutionConsumer {
       }
       // allowNoChanges: o Monitor pode concluir sem alterar arquivos (ex.:
       // origem EXTERNO, ou decidir apenas desbloquear a tarefa).
-      const result = await this.worker.executeTask(execution, prompt.text, models, undefined, undefined, true)
+      // task-p2-1116: propaga o modelo do attempt corrente (context.model,
+      // mutado pelo WorkerLauncher) para a linha de execução ativa; nunca
+      // inventa modelo (mantém o inicial conhecido quando ainda indefinido).
+      const modelHeartbeat = setInterval(() => {
+        void this.updateMonitorExecutionModel(monitorExecutionId, execution.model ?? models[0] ?? null).catch(error => {
+          console.warn('[MonitorResolutionConsumer] falha ao atualizar modelo da execução:', error instanceof Error ? error.message : String(error))
+        })
+      }, 30_000)
+      modelHeartbeat.unref?.()
+      let result: WorkerResult
+      try {
+        result = await this.worker.executeTask(execution, prompt.text, models, undefined, undefined, true)
+      } finally {
+        clearInterval(modelHeartbeat)
+      }
       await this.safeRecord(taskId, 'monitor_resolution_finished', {
         blockId: blocker.id,
         blockReason: blocker.block_reason,
@@ -214,17 +230,19 @@ export class MonitorResolutionConsumer {
   /**
    * Registra a execução do monitor em motor_active_executions para que o
    * WorkerActivityService possa reportar o Monitor como ativo no Mapa.
+   * `model` é o modelo inicial conhecido da cadeia (NULL quando não há —
+   * o contrato nunca inventa fallback).
    */
-  private async registerMonitorExecution(executionId: string, databaseTaskId: number, subtaskId: number | null | undefined, provider: string | null): Promise<boolean> {
+  private async registerMonitorExecution(executionId: string, databaseTaskId: number, subtaskId: number | null | undefined, provider: string | null, model: string | null): Promise<boolean> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
       await connection.query(`SELECT chave FROM motor_configuracoes WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project') ORDER BY chave FOR UPDATE`)
       if (!await providerHasCapacity(connection, provider, 'monitor')) { await connection.rollback(); return false }
       await connection.query(
-        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
-         VALUES (?, ?, ?, 'monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
-        [executionId, databaseTaskId, subtaskId ?? null, provider]
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, model, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, ?, 'monitor', ?, ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+        [executionId, databaseTaskId, subtaskId ?? null, provider, model]
       )
       await connection.commit()
       return true
@@ -236,6 +254,18 @@ export class MonitorResolutionConsumer {
     } finally {
       connection.release()
     }
+  }
+
+  /**
+   * Atualiza somente a coluna `model` da execução ativa do monitor. Não toca
+   * heartbeat/TTL: a missão usa TTL fixo e o MonitorMissionRecoveryReconciler
+   * depende dessa semântica para detectar missões órfãs.
+   */
+  private async updateMonitorExecutionModel(executionId: string, model: string | null): Promise<void> {
+    await this.pool.query(
+      'UPDATE motor_active_executions SET model=? WHERE execution_id=? AND phase=\'monitor\'',
+      [model, executionId],
+    )
   }
 
   /**

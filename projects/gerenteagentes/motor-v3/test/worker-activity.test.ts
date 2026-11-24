@@ -91,6 +91,43 @@ describe('WorkerActivityService', () => {
     }))
   })
 
+  it('exibe o modelo do Monitor em missão ativa lido da própria execução (e.model, sem sessão de subtarefa)', async () => {
+    // Missão do Monitor sem subtarefa: analyst_task_sessions/motor_agent_sessions
+    // não cobrem a linha; a fonte do modelo é motor_active_executions.model
+    // (COALESCE(ats.model, mas.model, e.model) da query de leitura).
+    const { activity, pool } = service([], [{
+      execution_id: 'monitor-77-1', task_id: 'task-blocked', subtask_id: null,
+      phase: 'monitor', model: 'ollama/qwen3:8b', agent_id: null,
+      started_at: new Date(1000), heartbeat_at: new Date(2000),
+    }])
+
+    const result = await activity.getActivity()
+
+    // A query precisa selecionar e.model no COALESCE (migration 0109).
+    const executionsSql = String(pool.query.mock.calls
+      .find(([sql]: [string]) => sql.includes('motor_active_executions'))?.[0] ?? '')
+    expect(executionsSql).toContain('COALESCE(ats.model, mas.model, e.model)')
+
+    expect(result.workers).toEqual(expect.arrayContaining([expect.objectContaining({
+      role: 'manager', active: true, model: 'ollama/qwen3:8b', taskId: 'task-blocked', phase: 'monitor',
+    })]))
+  })
+
+  it('retorna model null para execução vigente sem modelo conhecido em nenhuma fonte', async () => {
+    // Nunca inventar fallback: e.model NULL sem sessão ativa → model null.
+    const { activity } = service([], [{
+      execution_id: 'monitor-88-1', task_id: 'task-blocked', subtask_id: null,
+      phase: 'monitor', model: null, agent_id: null,
+      started_at: new Date(1000), heartbeat_at: new Date(2000),
+    }])
+
+    const result = await activity.getActivity()
+
+    expect(result.motor.isRunning).toBe(true)
+    const manager = result.workers.find(worker => worker.role === 'manager')
+    expect(manager).toMatchObject({ active: true, model: null })
+  })
+
   it('mantém o motor ativo e exibe deploy enquanto há lote de deploy running', async () => {
     const { activity } = service([], [{ task_id: 'task-p12-909' }])
 

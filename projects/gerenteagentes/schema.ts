@@ -995,6 +995,8 @@ export const motorActiveExecutions = mysqlTable("motor_active_executions", {
     .references(() => subtarefas.id, { onDelete: "cascade" }),
   phase: varchar("phase", { length: 20 }).notNull(),
   provider: varchar("provider", { length: 100 }),
+  // task-p2-1116: modelo de IA vigente da execução (NULL = desconhecido; nunca inventar).
+  model: varchar("model", { length: 200 }),
   startedAt: timestamp("started_at").notNull().defaultNow(),
   heartbeatAt: timestamp("heartbeat_at").notNull().defaultNow(),
   expiresAt: timestamp("expires_at").notNull(),

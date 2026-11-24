@@ -1076,24 +1076,28 @@ export class MySqlDevelopmentExecutionRepository {
     taskDatabaseId: number
     subtaskId: number
     ttlMs: number
+    /** Modelo conhecido da sessão no registro (task-p2-1116); NULL = desconhecido. */
+    model?: string | null
   }): Promise<void> {
     const ttlSeconds = Math.max(1, Math.ceil(input.ttlMs / 1000))
     await this.pool.query(
       `INSERT INTO motor_active_executions
-        (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
-       VALUES (?, ?, ?, 'development', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND))
-       ON DUPLICATE KEY UPDATE heartbeat_at=NOW(), expires_at=VALUES(expires_at), phase='development'`,
-      [input.executionId, input.taskDatabaseId, input.subtaskId, ttlSeconds],
+        (execution_id, tarefa_id, subtarefa_id, phase, model, started_at, heartbeat_at, expires_at)
+       VALUES (?, ?, ?, 'development', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND))
+       ON DUPLICATE KEY UPDATE heartbeat_at=NOW(), expires_at=VALUES(expires_at), phase='development',
+         model=COALESCE(VALUES(model), model)`,
+      [input.executionId, input.taskDatabaseId, input.subtaskId, input.model ?? null, ttlSeconds],
     )
   }
 
-  async heartbeatDevelopmentLease(executionId: string, ttlMs: number): Promise<void> {
+  async heartbeatDevelopmentLease(executionId: string, ttlMs: number, model?: string | null): Promise<void> {
     const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1000))
     await this.pool.query(
       `UPDATE motor_active_executions
-          SET heartbeat_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL ? SECOND)
+          SET heartbeat_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL ? SECOND),
+              model=COALESCE(?, model)
         WHERE execution_id=? AND phase='development'`,
-      [ttlSeconds, executionId],
+      [ttlSeconds, model ?? null, executionId],
     )
   }
 

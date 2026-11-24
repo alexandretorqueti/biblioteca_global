@@ -313,7 +313,10 @@ export class SubtaskExecutionConsumer {
     }
     const leaseTtlMs = Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000)
     const leaseHeartbeat = setInterval(() => {
-      void this.repository.heartbeatDevelopmentLease?.(message.executionId, leaseTtlMs).catch(error => {
+      // task-p2-1116: registra o modelo do attempt corrente (context.model é
+      // mutado pelo WorkerLauncher); cai para o primeiro da cadeia enquanto não
+      // houver attempt iniciado; nunca inventa (null preserva o existente).
+      void this.repository.heartbeatDevelopmentLease?.(message.executionId, leaseTtlMs, context.model ?? models[0] ?? null).catch(error => {
         console.warn('[SubtaskExecutionConsumer] falha ao renovar lease DEV:', error instanceof Error ? error.message : String(error))
       })
     }, Math.max(1000, Math.floor(leaseTtlMs / 3)))
