@@ -29,6 +29,7 @@ import { ForjadorModule } from "./modules/forjador/forjador.module"
 import { PainelTenantModule } from "./modules/painel-tenant/painel-tenant.module"
 import { CanaisWhatsappModule } from "./modules/canais-whatsapp/canais-whatsapp.module"
 import { GestaoTarefasGlobalFluxoModule } from "./modules/gestao-tarefas-global-fluxo/gestao-tarefas-global-fluxo.module"
+import { GestaoTarefasGlobalRecorrenciaModule } from "./modules/gestao-tarefas-global-recorrencia/gestao-tarefas-global-recorrencia.module"
 
 @Module({
   imports: [
@@ -64,6 +65,9 @@ import { GestaoTarefasGlobalFluxoModule } from "./modules/gestao-tarefas-global-
     // Fluxo custom da tarefa (gestao-de-tarefas-global): rotas
     // :slug/tarefas/:id/... mais específicas que o CRUD — casadas antes.
     GestaoTarefasGlobalFluxoModule,
+    // Agendador do motor de recorrência (gestao-de-tarefas-global): sem rotas,
+    // apenas o timer de geração (macro 4, subtarefa 3).
+    GestaoTarefasGlobalRecorrenciaModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,
