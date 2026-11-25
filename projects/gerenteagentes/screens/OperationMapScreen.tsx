@@ -39,7 +39,7 @@ export const componentId = "gerenteagentes-operation-map"
 interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; dependsOnTaskIds?: number[]; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }>; currentModel?: string | null; modelHistory?: Array<{ id: number; model: string; purpose: string; status: string; openedAt: string; lastActivityAt: string; closedAt: string | null }> | null }
-interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; tipo?: string | null; dependsOnTaskIds?: number[]; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
+interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; tipo?: string | null; dependsOnTaskIds?: number[]; dependencias?: Array<{ id: number; titulo: string; status?: string }> | null; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
 interface MotorOperation { operationId: string; sequence: number; phase: string; outcome: string; messageType: string; commandCode?: string | null; policyCode?: string | null; policyVersion?: number | null; actionCode?: string | null; primitiveCode?: string | null; reasonCode?: string | null; resultJson?: unknown; durationMs?: number | null; createdAt: string }
 interface ChatMessage { id: number; tarefaId?: number; role: string; texto: string; createdAt: string; deliveryId?: number | null; deliveryState?: string | null; deliveryError?: string | null }
 interface Session { sessionKey: string; model?: string; status?: string; executionOrder?: number; openedAt?: string; closedAt?: string | null; closeReason?: string | null; messages: { items: Array<{ role: string; text: string; sequenceNumber: number }>; nextCursor?: string | null; hasNextPage?: boolean } }
@@ -746,10 +746,31 @@ export default function OperationMapScreen() {
     const blockInfo = detail?.task?.blockInfo
     const conflictData = detail?.task?.promotionConflictAnalysis
     const isMergeConflict = blockInfo?.kind === 'merge_conflict' && conflictData
+    // Dependências da tarefa exibidas no resumo (tarefa 1120). Fonte preferencial:
+    // `detail?.task?.dependencias` (motor-detail já traz id+título+status). Fallback:
+    // resolver `dependsOnTaskIds` (detalhe ou lista local) contra `tasks`; id que
+    // não está na lista carregada exibe apenas `#<id>`. Sem dependências: sem bloco.
+    const dependenciasDetalhe = detail?.task?.dependencias
+    const dependencias: Array<{ id: number; titulo: string }> = Array.isArray(dependenciasDetalhe) && dependenciasDetalhe.length > 0
+      ? dependenciasDetalhe.map((d) => ({ id: Number(d.id), titulo: d.titulo }))
+      : (() => {
+          const ids = [...new Set([...(detail?.task?.dependsOnTaskIds ?? []), ...(selected.dependsOnTaskIds ?? [])].map(Number).filter((n) => Number.isSafeInteger(n) && n > 0 && n !== selected.id))].sort((a, b) => a - b)
+          return ids.map((id) => ({ id, titulo: tasks.find((t) => Number(t.id) === id)?.titulo ?? "" }))
+        })()
 
     return (
       <Stack spacing={1.5}>
         <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || detail?.task?.descricao || "Sem descrição"}</Typography>
+        {dependencias.length > 0 && (
+          <Stack spacing={0.5} component="ul" sx={{ m: 0, listStyle: "none", p: 0 }} data-testid="task-dependencies">
+            <Typography variant="caption" color="text.secondary">Depende das tarefas:</Typography>
+            {dependencias.map((d) => (
+              <li key={d.id} style={{ listStyle: "none" }}>
+                <Typography variant="body2" sx={{ overflowWrap: "anywhere" }} data-testid={`task-dependency-${d.id}`}>#{d.id} {d.titulo}</Typography>
+              </li>
+            ))}
+          </Stack>
+        )}
         {blockInfo && !isMergeConflict && <Alert severity="error"><b>Bloqueio:</b> {blockInfo.excerpt || blockInfo.kind || detail?.task?.errorMessage}</Alert>}
         {isMergeConflict && conflictData && (
           <Alert severity="error" sx={{ p: 1.5 }}>
