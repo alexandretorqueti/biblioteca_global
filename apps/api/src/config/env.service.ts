@@ -241,6 +241,20 @@ export class EnvService {
     return value
   }
 
+  /** Diretório de armazenamento dos anexos de tarefas (gestao-de-tarefas-global). */
+  get anexosDir(): string {
+    return this.config.get<string>("ANEXOS_DIR") ?? "/data/gestao-tarefas-anexos"
+  }
+
+  /** Limite máximo de bytes por anexo (default ~10MB). */
+  get anexosMaxBytes(): number {
+    const value = Number(this.config.get<string>("ANEXOS_MAX_BYTES") ?? "10485760")
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error("ANEXOS_MAX_BYTES deve ser um inteiro positivo")
+    }
+    return value
+  }
+
   get telegramBotToken(): string {
     return this.config.get<string>("TELEGRAM_BOT_TOKEN") ?? ""
   }

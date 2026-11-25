@@ -29,6 +29,7 @@ import { ForjadorModule } from "./modules/forjador/forjador.module"
 import { PainelTenantModule } from "./modules/painel-tenant/painel-tenant.module"
 import { CanaisWhatsappModule } from "./modules/canais-whatsapp/canais-whatsapp.module"
 import { GestaoTarefasGlobalFluxoModule } from "./modules/gestao-tarefas-global-fluxo/gestao-tarefas-global-fluxo.module"
+import { GestaoTarefasGlobalAnexosModule } from "./modules/gestao-tarefas-global-anexos/gestao-tarefas-global-anexos.module"
 import { GestaoTarefasGlobalRecorrenciaModule } from "./modules/gestao-tarefas-global-recorrencia/gestao-tarefas-global-recorrencia.module"
 import { GestaoTarefasGlobalNotificacoesModule } from "./modules/gestao-tarefas-global-notificacoes/gestao-tarefas-global-notificacoes.module"
 
@@ -66,6 +67,9 @@ import { GestaoTarefasGlobalNotificacoesModule } from "./modules/gestao-tarefas-
     // Fluxo custom da tarefa (gestao-de-tarefas-global): rotas
     // :slug/tarefas/:id/... mais específicas que o CRUD — casadas antes.
     GestaoTarefasGlobalFluxoModule,
+    // Anexos de tarefas (gestao-de-tarefas-global): rotas
+    // :slug/tarefas/:id/anexos[...] mais específicas que o CRUD — casadas antes.
+    GestaoTarefasGlobalAnexosModule,
     // Agendador do motor de recorrência (gestao-de-tarefas-global): sem rotas,
     // apenas o timer de geração (macro 4, subtarefa 3).
     GestaoTarefasGlobalRecorrenciaModule,

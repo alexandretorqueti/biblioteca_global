@@ -13,7 +13,14 @@
  *   com tipo de evento, envolvidos (nome), mensagem e data;
  * - CHAT: mensagens da tarefa com autor e data (GET `.../mensagens`),
  *   composer com validação de texto não vazio no FRONT (POST `.../mensagens`
- *   body { texto }) e recarga do chat após transições de estado.
+ *   body { texto }) e recarga do chat após transições de estado;
+ * - ANEXOS (macro #6): lista (GET `.../anexos` via bundle.http), upload
+ *   (input[type=file] oculto + FormData + fetch autenticado com o access
+ *   token do bundle — o ApiHttpClient não suporta multipart/resposta
+ *   binária), preview de imagem/PDF via blob + URL.createObjectURL
+ *   (GET `.../anexos/:anexoId/preview`) e download via anchor com blob
+ *   (GET `.../.../download`). A UI usa apenas ids/URLs da API — nenhum
+ *   caminho físico do servidor.
  *
  * Regras de estado (máquina de estados) são do BACKEND — a tela só reflete:
  * estados terminais desabilitam as ações de fluxo; erros 403/409 da API são
@@ -25,7 +32,7 @@
  * - `useRef` de montagem para não setState após desmontar;
  * - parsing tolerante de lista (array cru ou { items }).
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react"
 import {
   Alert,
   Box,
@@ -50,8 +57,15 @@ import {
   TextField,
   Typography,
 } from "@mui/material"
-import { RefreshRounded, SendRounded } from "@mui/icons-material"
+import {
+  DownloadRounded,
+  RefreshRounded,
+  SendRounded,
+  UploadFileRounded,
+  VisibilityRounded,
+} from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import type { CustomScreenProps } from "@biblioteca-global/ui"
 
 export const componentId = "gestao-de-tarefas-global-tarefa-fluxo"
@@ -95,6 +109,7 @@ const EVENTO_INFO: Record<string, { label: string; cor: CorChip }> = {
   devolucao_aguardando_terceiro: { label: "Devolução — aguardando terceiro", cor: "warning" },
   mudanca_status: { label: "Mudança de status", cor: "default" },
   mudanca_prazo: { label: "Alteração de prazo", cor: "default" },
+  anexo: { label: "Anexo", cor: "default" },
 }
 
 // ============================================================================
@@ -129,6 +144,28 @@ type MensagemItem = {
 
 type ColaboradorOpcao = { id: number; nome: string }
 
+/** Item de anexo — espelha ItemAnexo do backend (sem caminho físico). */
+type AnexoItem = {
+  id: number
+  nomeArquivo: string
+  mimeType: string | null
+  tamanhoBytes: number | null
+  enviadoPorNome: string
+  criadoEm: string
+}
+
+/** MIMEs renderizáveis inline no navegador (preview via nova aba). */
+const MIMES_PREVIEWAVEIS = new Set(["image/png", "image/jpeg", "application/pdf"])
+
+/** Limite de upload validado no FRONT (~10MB) — o backend revalida. */
+const LIMITE_UPLOAD_BYTES = 10 * 1024 * 1024
+
+/** Extensões aceitas (espelha a whitelist do backend) p/ o `accept`. */
+const EXTENSOES_ACEITAS = [".pdf", ".png", ".jpg", ".jpeg",
+  ".txt", ".js", ".mjs", ".cjs", ".md", ".markdown", ".csv", ".tsv",
+  ".json", ".log", ".html", ".htm", ".xml", ".yml", ".yaml", ".ini",
+  ".cfg", ".conf", ".sh", ".sql", ".toml", ".properties"].join(",")
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -156,6 +193,54 @@ function mensagemErro(erro: unknown): string {
     : "Não foi possível completar a operação."
 }
 
+/** Tamanho legível (B/KB/MB). */
+function formatarTamanho(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes)) return "—"
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1).replace(/\.0$/, "")} KB`
+  const mb = kb / 1024
+  return `${mb.toFixed(1).replace(/\.0$/, "")} MB`
+}
+
+/** Extrai a mensagem literal do corpo do erro da API (NestJS). */
+async function mensagemDoCorpoErro(resposta: Response): Promise<string> {
+  try {
+    const texto = await resposta.text()
+    if (texto) {
+      const corpo = JSON.parse(texto) as { message?: string | string[] }
+      if (typeof corpo.message === "string") return corpo.message
+      if (Array.isArray(corpo.message) && corpo.message.length > 0) {
+        return corpo.message.join("; ")
+      }
+    }
+  } catch {
+    // corpo não-JSON — cai no fallback abaixo
+  }
+  return `Falha na operação (HTTP ${resposta.status}).`
+}
+
+/**
+ * Fetch autenticado (Bearer do bundle) para rotas multipart/binárias — o
+ * ApiHttpClient não suporta multipart nem resposta binária (pacotes
+ * verificadas em apps/web/src/api/client.ts e packages/api-client/src/http.ts).
+ * O token é o MESMO access token usado pelo bundle.http.
+ */
+async function fetchAutenticado(
+  bundle: NonNullable<ReturnType<typeof useApi>>,
+  caminho: string,
+  opcoes: RequestInit = {},
+): Promise<Response> {
+  const token = bundle.getAccessToken()
+  return fetch(`${resolveApiBaseUrl()}${caminho}`, {
+    ...opcoes,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...opcoes.headers,
+    },
+  })
+}
+
 // ============================================================================
 // Componente
 // ============================================================================
@@ -171,6 +256,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
   const [tarefa, setTarefa] = useState<TarefaResumo | null>(null)
   const [historico, setHistorico] = useState<ItemHistorico[]>([])
   const [mensagens, setMensagens] = useState<MensagemItem[]>([])
+  const [anexos, setAnexos] = useState<AnexoItem[]>([])
   const [colaboradores, setColaboradores] = useState<ColaboradorOpcao[]>([])
   const [carregando, setCarregando] = useState(true)
   const [erroCarga, setErroCarga] = useState<string | null>(null)
@@ -191,6 +277,11 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
   const [chatEnviando, setChatEnviando] = useState(false)
   const [chatErro, setChatErro] = useState<string | null>(null)
 
+  // Anexos — upload via input oculto; erros da API exibidos literalmente.
+  const [uploadEnviando, setUploadEnviando] = useState(false)
+  const [anexosErro, setAnexosErro] = useState<string | null>(null)
+  const inputArquivoRef = useRef<HTMLInputElement | null>(null)
+
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -204,7 +295,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
     setCarregando(true)
     setErroCarga(null)
     try {
-      const [resTarefa, resHistorico, resMensagens] = await Promise.all([
+      const [resTarefa, resHistorico, resMensagens, resAnexos] = await Promise.all([
         bundle.http.request<TarefaResumo>("GET", base, { auth: "access" }),
         bundle.http
           .request<ItemHistorico[]>("GET", `${base}/historico`, { auth: "access" })
@@ -212,6 +303,9 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
         bundle.http
           .request<MensagemItem[]>("GET", `${base}/mensagens`, { auth: "access" })
           .catch(() => [] as MensagemItem[]),
+        bundle.http
+          .request<AnexoItem[]>("GET", `${base}/anexos`, { auth: "access" })
+          .catch(() => [] as AnexoItem[]),
       ])
       if (!mounted.current) return
       setTarefa(resTarefa ?? null)
@@ -221,6 +315,9 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
       )
       setMensagens(
         comoLista(resMensagens).slice().sort((a, b) => a.criadoEm.localeCompare(b.criadoEm)),
+      )
+      setAnexos(
+        comoLista(resAnexos).slice().sort((a, b) => a.criadoEm.localeCompare(b.criadoEm)),
       )
     } catch (erro) {
       if (mounted.current) setErroCarga(mensagemErro(erro))
@@ -314,6 +411,74 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
     }
   }
 
+  /** Upload multipart (campo 'arquivo') — depois recarrega lista + histórico. */
+  const enviarAnexo = async (arquivo: File): Promise<void> => {
+    if (!bundle || !base) return
+    if (arquivo.size > LIMITE_UPLOAD_BYTES) {
+      setAnexosErro(
+        `Arquivo excede o limite de ~10MB (${formatarTamanho(arquivo.size)}) — escolha um arquivo menor.`,
+      )
+      return
+    }
+    setUploadEnviando(true)
+    setAnexosErro(null)
+    try {
+      const form = new FormData()
+      form.append("arquivo", arquivo)
+      const resposta = await fetchAutenticado(bundle, `${base}/anexos`, {
+        method: "POST",
+        body: form,
+      })
+      if (!resposta.ok) throw new Error(await mensagemDoCorpoErro(resposta))
+      if (!mounted.current) return
+      // Recarrega tudo: a lista de anexos E o histórico (evento 'anexo').
+      await carregar()
+    } catch (erro) {
+      if (mounted.current) setAnexosErro(mensagemErro(erro))
+    } finally {
+      if (mounted.current) setUploadEnviando(false)
+    }
+  }
+
+  const aoSelecionarArquivo = (evento: ChangeEvent<HTMLInputElement>): void => {
+    const arquivo = evento.target.files?.[0]
+    evento.target.value = "" // permite reescolher o mesmo arquivo
+    if (arquivo) void enviarAnexo(arquivo)
+  }
+
+  /** Preview inline (imagem/PDF) via blob + URL.createObjectURL. */
+  const abrirPreview = async (anexo: AnexoItem): Promise<void> => {
+    if (!bundle) return
+    setAnexosErro(null)
+    try {
+      const resposta = await fetchAutenticado(bundle, `${base}/anexos/${anexo.id}/preview`)
+      if (!resposta.ok) throw new Error(await mensagemDoCorpoErro(resposta))
+      const blob = await resposta.blob()
+      window.open(URL.createObjectURL(blob), "_blank", "noopener,noreferrer")
+    } catch (erro) {
+      if (mounted.current) setAnexosErro(mensagemErro(erro))
+    }
+  }
+
+  /** Download via anchor com blob (demais tipos + "baixar" de previewáveis). */
+  const baixarAnexo = async (anexo: AnexoItem): Promise<void> => {
+    if (!bundle) return
+    setAnexosErro(null)
+    try {
+      const resposta = await fetchAutenticado(bundle, `${base}/anexos/${anexo.id}/download`)
+      if (!resposta.ok) throw new Error(await mensagemDoCorpoErro(resposta))
+      const blob = await resposta.blob()
+      const url = URL.createObjectURL(blob)
+      const ancora = document.createElement("a")
+      ancora.href = url
+      ancora.download = anexo.nomeArquivo
+      ancora.click()
+      setTimeout(() => URL.revokeObjectURL(url), 0)
+    } catch (erro) {
+      if (mounted.current) setAnexosErro(mensagemErro(erro))
+    }
+  }
+
   const abrirDialog = (tipo: "delegar" | "devolver"): void => {
     setDialogErro(null)
     setAvisoAcao(null)
@@ -391,7 +556,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
 
       <Grid container spacing={2}>
         {/* Histórico — trilha cronológica somente leitura */}
-        <Grid size={{ xs: 12, md: 6 }}>
+        <Grid size={{ xs: 12, md: 4 }}>
           <Paper sx={{ p: 2, height: "100%" }}>
             <Typography variant="subtitle1" fontWeight={700} gutterBottom>
               Histórico do fluxo
@@ -443,7 +608,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
         </Grid>
 
         {/* Chat da tarefa */}
-        <Grid size={{ xs: 12, md: 6 }}>
+        <Grid size={{ xs: 12, md: 4 }}>
           <Paper sx={{ p: 2, height: "100%", display: "flex", flexDirection: "column" }}>
             <Typography variant="subtitle1" fontWeight={700} gutterBottom>
               Chat da tarefa
@@ -510,6 +675,82 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
               <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
                 A mensagem não pode ser vazia.
               </Typography>
+            )}
+          </Paper>
+        </Grid>
+
+        {/* Anexos — upload + lista com preview/download (macro #6) */}
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Paper sx={{ p: 2, height: "100%", display: "flex", flexDirection: "column" }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <Typography variant="subtitle1" fontWeight={700} sx={{ flexGrow: 1 }}>
+                Anexos
+              </Typography>
+              <input
+                ref={inputArquivoRef}
+                type="file"
+                accept={EXTENSOES_ACEITAS}
+                hidden
+                onChange={(e) => aoSelecionarArquivo(e)}
+              />
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={uploadEnviando ? <CircularProgress size={14} color="inherit" /> : <UploadFileRounded />}
+                disabled={uploadEnviando}
+                onClick={() => inputArquivoRef.current?.click()}
+              >
+                {uploadEnviando ? "Enviando..." : "Anexar arquivo"}
+              </Button>
+            </Stack>
+            <Box sx={{ flexGrow: 1, minHeight: 120, maxHeight: 420, overflowY: "auto" }}>
+              {carregando && anexos.length === 0 ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+                  <CircularProgress size={22} />
+                </Box>
+              ) : anexos.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  Nenhum anexo nesta tarefa — use "Anexar arquivo" (PDF, imagem ou texto, até ~10MB).
+                </Typography>
+              ) : (
+                <Stack spacing={1}>
+                  {anexos.map((a) => (
+                    <Paper key={a.id} variant="outlined" sx={{ p: 1 }}>
+                      <Typography variant="subtitle2" noWrap title={a.nomeArquivo}>
+                        {a.nomeArquivo}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {a.mimeType ?? "tipo desconhecido"} · {formatarTamanho(a.tamanhoBytes)}
+                        {" · "}
+                        {a.enviadoPorNome} · {formatarData(a.criadoEm)}
+                      </Typography>
+                      <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }}>
+                        {MIMES_PREVIEWAVEIS.has((a.mimeType ?? "").toLowerCase()) && (
+                          <Button
+                            size="small"
+                            startIcon={<VisibilityRounded fontSize="small" />}
+                            onClick={() => void abrirPreview(a)}
+                          >
+                            Visualizar
+                          </Button>
+                        )}
+                        <Button
+                          size="small"
+                          startIcon={<DownloadRounded fontSize="small" />}
+                          onClick={() => void baixarAnexo(a)}
+                        >
+                          Baixar
+                        </Button>
+                      </Stack>
+                    </Paper>
+                  ))}
+                </Stack>
+              )}
+            </Box>
+            {anexosErro && (
+              <Alert severity="error" sx={{ mt: 1 }}>
+                {anexosErro}
+              </Alert>
             )}
           </Paper>
         </Grid>
