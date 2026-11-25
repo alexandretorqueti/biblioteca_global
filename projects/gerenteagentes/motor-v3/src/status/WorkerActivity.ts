@@ -117,7 +117,7 @@ export class WorkerActivityService {
     try {
       const [rows] = await this.pool.query<PersistedExecution[]>(`
         SELECT e.execution_id, CAST(COALESCE(t.external_id, t.id) AS CHAR) AS task_id,
-               e.subtarefa_id, e.phase, COALESCE(ats.model, mas.model) AS model,
+               e.subtarefa_id, e.phase, COALESCE(ats.model, mas.model, e.model) AS model,
                mas.agent_id AS agent_id,
                e.started_at, e.heartbeat_at
           FROM motor_active_executions e

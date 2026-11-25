@@ -338,6 +338,12 @@ async function start() {
         )
         analystSessionRows.set(session.sessionId, Number(result.insertId))
         analystSessionSequences.set(session.sessionId, 0)
+        // task-p2-1116: espelha o modelo da sessão na linha de execução ativa
+        // (fonte adicional para o Mapa; a leitura prioriza ats.model).
+        await pool.query(
+          `UPDATE motor_active_executions SET model=? WHERE execution_id=? AND phase='analysis'`,
+          [context.model ?? 'console-default', context.executionId],
+        )
       }),
       onSessionResumed: async (session, context) => auditAnalyst(async () => {
         const [rows] = await pool.query<any[]>(`SELECT s.id, COALESCE(MAX(m.sequence_number), 0) AS last_sequence
@@ -581,6 +587,9 @@ async function start() {
             taskDatabaseId: metadata.databaseTaskId,
             subtaskId: metadata.subtaskId,
             ttlMs: Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000),
+            // task-p2-1116: modelo da sessão DEV recém-criada (mesma fonte do
+            // INSERT de motor_agent_sessions acima).
+            model: input.model ?? 'console-default',
           })
           await connection.query(
             `UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW()

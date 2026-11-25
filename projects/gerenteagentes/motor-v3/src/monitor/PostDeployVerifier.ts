@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { QueueMessage } from '../queue/index.js'
 import { insertOutboxMessage, createQueueMessage } from '../queue/index.js'
-import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
+import type { WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import type { ConsoleHumanNotifier, MonitorHumanNotifier } from './HumanNotifier.js'
 import { PostDeployPromptResolver } from './PostDeployPromptResolver.js'
@@ -213,14 +213,15 @@ export class PostDeployVerifier {
       deployDiagnostics: context.diagnostics,
     })
 
-    // Registra execução ativa do monitor
+    // Carrega cadeia MONITOR do projeto e registra execução ativa do monitor.
+    // task-p2-1116: o modelo inicial da cadeia vai na linha de execução para
+    // que o Mapa de agentes exiba o modelo em uso pelo Monitor.
     const monitorExecutionId = `postdeploy-${batchId}-${Date.now()}`
     const provider = await this.monitorProvider(tasks[0]!.project_slug)
-    if (!await this.registerMonitorExecution(monitorExecutionId, tasks[0]!.database_task_id, provider)) return
+    const models = await this.monitorModels(tasks[0]!.project_slug)
+    if (!await this.registerMonitorExecution(monitorExecutionId, tasks[0]!.database_task_id, provider, models[0] ?? null)) return
 
     try {
-      // Carrega cadeia MONITOR do projeto
-      const models = await this.monitorModels(tasks[0]!.project_slug)
       if (models.length === 0) {
         await this.logOperation(batchId, 'decision', 'skipped', message, { reasonCode: 'postdeploy_no_monitor_models' })
         return
@@ -245,14 +246,25 @@ export class PostDeployVerifier {
         logger: console,
       }
 
-      const result = await this.worker.executeTask(
-        execution,
-        prompt.text,
-        models,
-        undefined,
-        undefined,
-        true, // allowNoChanges
-      )
+      const modelHeartbeat = setInterval(() => {
+        void this.updateMonitorExecutionModel(monitorExecutionId, (execution as { model?: string }).model ?? models[0] ?? null).catch(error => {
+          console.warn('[PostDeployVerifier] falha ao atualizar modelo da execução:', error instanceof Error ? error.message : String(error))
+        })
+      }, 30_000)
+      modelHeartbeat.unref?.()
+      let result: WorkerResult
+      try {
+        result = await this.worker.executeTask(
+          execution,
+          prompt.text,
+          models,
+          undefined,
+          undefined,
+          true, // allowNoChanges
+        )
+      } finally {
+        clearInterval(modelHeartbeat)
+      }
 
       await this.safeRecord(batchId, 'postdeploy_verification_finished', {
         success: result.success,
@@ -683,24 +695,24 @@ export class PostDeployVerifier {
     return rows.map(row => String(row.model)).filter(Boolean)
   }
 
-  private async registerMonitorExecution(executionId: string, databaseTaskId: number, provider: string | null): Promise<boolean> {
+  private async registerMonitorExecution(executionId: string, databaseTaskId: number, provider: string | null, model: string | null): Promise<boolean> {
     // Alguns adaptadores de teste/boot não expõem conexão transacional; mantêm
     // o contrato legado e não podem impedir a verificação por infraestrutura
     // de capacidade ausente.
     if (typeof (this.pool as any).getConnection !== 'function') {
       await this.pool.query(
-        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
-         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
-        [executionId, databaseTaskId, provider],
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, model, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
+        [executionId, databaseTaskId, provider, model],
       )
       return true
     }
     const connection = await this.pool.getConnection()
     if (!connection) {
       await this.pool.query(
-        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
-         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
-        [executionId, databaseTaskId, provider],
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, model, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
+        [executionId, databaseTaskId, provider, model],
       )
       return true
     }
@@ -709,9 +721,9 @@ export class PostDeployVerifier {
       await connection.query(`SELECT chave FROM motor_configuracoes WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project') ORDER BY chave FOR UPDATE`)
       if (!await providerHasCapacity(connection, provider, 'monitor')) { await connection.rollback(); return false }
       await connection.query(
-        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
-         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
-        [executionId, databaseTaskId, provider],
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, model, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
+        [executionId, databaseTaskId, provider, model],
       )
       await connection.commit()
       return true
@@ -722,6 +734,18 @@ export class PostDeployVerifier {
     } finally {
       connection.release()
     }
+  }
+
+  /**
+   * Atualiza somente a coluna `model` da execução ativa (modelo do attempt
+   * corrente exposto pelo WorkerLauncher via context.model). Não toca
+   * heartbeat/TTL: o TTL fixo de 20min é a janela do verificador.
+   */
+  private async updateMonitorExecutionModel(executionId: string, model: string | null): Promise<void> {
+    await this.pool.query(
+      'UPDATE motor_active_executions SET model=? WHERE execution_id=? AND phase=\'postdeploy_monitor\'',
+      [model, executionId],
+    )
   }
 
   private async unregisterMonitorExecution(executionId: string): Promise<void> {

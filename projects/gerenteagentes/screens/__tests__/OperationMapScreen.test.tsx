@@ -326,7 +326,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     delete globalThis.__bundleMapa
   })
 
-  function bundleComSubtarefas(tarefaId: number, subtarefas: Array<{ seq: number; titulo: string; status: string; resultado: string | null; blockInfo?: { reason: string } | null }>) {
+  function bundleComSubtarefas(tarefaId: number, subtarefas: Array<Record<string, unknown>>) {
     return {
       getAccessToken: () => "token-de-teste",
       http: {
@@ -349,6 +349,8 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
                 deliverCount: 1,
                 scope: "Escopo",
                 acceptanceCriteria: [],
+                currentModel: s.currentModel ?? null,
+                modelHistory: s.modelHistory ?? [],
               })),
             }
           }
@@ -453,5 +455,67 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     const estilo = getComputedStyle(resultado)
     expect(estilo.fontSize).toBe("15px")
     expect(estilo.lineHeight).toBe("1.6")
+  })
+
+  it("exibe o modelo atual na subtarefa em andamento com sessão ativa", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(16, [
+      {
+        seq: 1, titulo: "Subtarefa em execução", status: "running", resultado: null,
+        currentModel: "ollama/qwen3.8:27b-mtp-q8_0",
+        modelHistory: [{ id: 201, model: "ollama/qwen3.8:27b-mtp-q8_0", purpose: "development", status: "active", openedAt: "2026-11-24T10:00:00Z", lastActivityAt: "2026-11-24T10:20:00Z", closedAt: null }],
+      },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(16)
+
+    expect(await screen.findByTestId("subtask-current-model-1")).toHaveTextContent("Modelo atual: ollama/qwen3.8:27b-mtp-q8_0")
+    // Em andamento não exibe o bloco de histórico.
+    expect(screen.queryByTestId("subtask-model-history-1")).not.toBeInTheDocument()
+  })
+
+  it("exibe indicador de modelo desconhecido quando a subtarefa está em andamento sem sessão ativa", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(17, [
+      { seq: 1, titulo: "Subtarefa sem sessão", status: "running", resultado: null, currentModel: null, modelHistory: [] },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(17)
+
+    expect(await screen.findByTestId("subtask-current-model-1")).toHaveTextContent("Modelo atual: desconhecido")
+  })
+
+  it("exibe o histórico de modelos na subtarefa concluída (mais recente primeiro)", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(18, [
+      {
+        seq: 1, titulo: "Subtarefa concluída", status: "completed", resultado: null, currentModel: null,
+        modelHistory: [
+          { id: 202, model: "deepseek/deepseek-v4-flash", purpose: "development", status: "failed", openedAt: "2026-11-24T08:00:00Z", lastActivityAt: "2026-11-24T08:30:00Z", closedAt: "2026-11-24T08:31:00Z" },
+          { id: 201, model: "ollama/qwen3.8:27b-mtp-q8_0", purpose: "development", status: "completed", openedAt: "2026-11-24T07:00:00Z", lastActivityAt: "2026-11-24T07:40:00Z", closedAt: "2026-11-24T07:41:00Z" },
+        ],
+      },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(18)
+
+    const historico = await screen.findByTestId("subtask-model-history-1")
+    expect(historico).toHaveTextContent("Modelos que trabalharam nesta subtarefa (mais recente primeiro):")
+    expect(historico).toHaveTextContent("deepseek/deepseek-v4-flash")
+    expect(historico).toHaveTextContent("ollama/qwen3.8:27b-mtp-q8_0")
+    expect(historico).toHaveTextContent("failed")
+    expect(historico).toHaveTextContent("development")
+    // Mais recente primeiro: o chip da sessão 202 vem antes da 201.
+    expect(historico.textContent!.indexOf("deepseek/deepseek-v4-flash")).toBeLessThan(historico.textContent!.indexOf("ollama/qwen3.8:27b-mtp-q8_0"))
+    // Concluída não exibe o campo de modelo atual.
+    expect(screen.queryByTestId("subtask-current-model-1")).not.toBeInTheDocument()
+  })
+
+  it("exibe indicador de ausência de sessões para subtarefa bloqueada sem histórico", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(19, [
+      { seq: 1, titulo: "Subtarefa bloqueada sem sessões", status: "blocked", resultado: null, blockInfo: { reason: "Sem ambiente" }, currentModel: null, modelHistory: [] },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(19)
+
+    expect(await screen.findByTestId("subtask-model-history-1")).toHaveTextContent("Nenhuma sessão registrada para esta subtarefa.")
+    expect(screen.queryByTestId("subtask-current-model-1")).not.toBeInTheDocument()
   })
 })

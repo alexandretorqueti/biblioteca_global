@@ -91,6 +91,82 @@ describe("AgentStatusStrip — códigos de tarefa/subtarefa por agente", () => {
   })
 })
 
+describe("AgentStatusStrip — modelo em uso nos cards", () => {
+  it("exibe o modelo quando o agente está ativo (working + model visível)", () => {
+    renderStrip({
+      workers: [
+        { role: "analyst", active: true, model: "openai/gpt-5.6-luna", taskId: "886", subtaskId: 905, phase: "executing" },
+        { role: "developer", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+        { role: "manager", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+      ],
+    })
+
+    const model = screen.getByTestId("agent-model-analyst")
+    expect(model).toBeInTheDocument()
+    expect(model).toHaveTextContent("openai/gpt-5.6-luna")
+    expect(model).toHaveAttribute("title", "openai/gpt-5.6-luna")
+    // o código da tarefa/subtarefa continua exibido junto
+    expect(screen.getByTestId("agent-task-code-analyst")).toHaveTextContent("#886 · S905")
+  })
+
+  it.each([
+    ["analyst"],
+    ["developer"],
+    ["manager"],
+  ] as const)("exibe o modelo no card do %s ativo", (role) => {
+    renderStrip({
+      workers: [
+        { role: "analyst", active: role === "analyst", model: role === "analyst" ? "model-analyst" : null, taskId: role === "analyst" ? "1" : null, subtaskId: null, phase: "executing" },
+        { role: "developer", active: role === "developer", model: role === "developer" ? "model-dev" : null, taskId: role === "developer" ? "2" : null, subtaskId: null, phase: "worktree" },
+        { role: "manager", active: role === "manager", model: role === "manager" ? "model-mgr" : null, taskId: role === "manager" ? "3" : null, subtaskId: null, phase: "deploying" },
+      ],
+    })
+
+    const model = screen.getByTestId(`agent-model-${role}`)
+    expect(model).toBeInTheDocument()
+    expect(model).toHaveTextContent(`model-${role === "analyst" ? "analyst" : role === "developer" ? "dev" : "mgr"}`)
+  })
+
+  it("agente ativo sem modelo conhecido mantém tarefa/subtarefa e não exibe 'Inativo'", () => {
+    renderStrip({
+      workers: [
+        { role: "analyst", active: true, model: null, taskId: "886", subtaskId: 905, phase: "executing" },
+        { role: "developer", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+        { role: "manager", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+      ],
+    })
+
+    expect(screen.queryByTestId("agent-model-analyst")).not.toBeInTheDocument()
+    expect(screen.getByTestId("agent-task-code-analyst")).toHaveTextContent("#886 · S905")
+    expect(screen.getByTestId("agent-status-analyst")).not.toHaveTextContent("Inativo")
+  })
+
+  it("agente inativo com modelo conhecido continua exibindo o modelo", () => {
+    renderStrip({
+      workers: [
+        { role: "analyst", active: false, model: "gpt-5.6-luna", taskId: null, subtaskId: null, phase: null },
+        { role: "developer", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+        { role: "manager", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+      ],
+    })
+
+    expect(screen.getByTestId("agent-status-analyst")).toHaveTextContent("gpt-5.6-luna")
+    expect(screen.getByTestId("agent-status-analyst")).not.toHaveTextContent("Inativo")
+  })
+
+  it("agente inativo sem modelo continua exibindo 'Inativo'", () => {
+    renderStrip({
+      workers: [
+        { role: "analyst", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+        { role: "developer", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+        { role: "manager", active: false, model: null, taskId: null, subtaskId: null, phase: null },
+      ],
+    })
+
+    expect(screen.getByTestId("agent-status-analyst")).toHaveTextContent("Inativo")
+  })
+})
+
 describe("AgentStatusStrip — Motor: leva de deploy", () => {
   it("exibe múltiplos taskIds como chips quando o motor está em deploy", () => {
     renderStrip({
