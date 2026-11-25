@@ -18,7 +18,9 @@
  * - chat: POST grava autorId da SESSÃO (nunca do body) e GET retorna
  *   autor (nome) + data;
  * - realtime: task.status.changed nas transições e chat.message.created no
- *   envio (eventId uuid, projectId do token, taskId).
+ *   envio (eventId uuid, projectId do token, taskId);
+ * - notificações do sino (macro #5, subtarefa 2): delegação/devolução
+ *   inseridas na MESMA transição + push notification.created pós-commit.
  */
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -31,6 +33,7 @@ import { MySqlDialect } from "drizzle-orm/mysql-core"
 import type { Perfil, ProjetoResumo } from "@biblioteca-global/shared"
 import * as schemaGestao from "../../../../../../projects/gestao-de-tarefas-global/schema"
 import type { ProjectDbFactory } from "../../crud/project-db.factory"
+import { NotificacoesService } from "../../gestao-tarefas-global-notificacoes/notificacoes.service"
 import {
   FluxoTarefasGlobalService,
   type ContextoSessao,
@@ -198,6 +201,16 @@ function linhasDe(tabela: Tabela, fixture: Record<string, Array<Record<string, u
   return fixture[tabela] ?? []
 }
 
+/** Igualdade do fake: numérica quando ambos são números finitos; senão string. */
+function valorIgual(a: unknown, b: unknown): boolean {
+  const na = Number(a)
+  const nb = Number(b)
+  if (a !== "" && b !== "" && Number.isFinite(na) && Number.isFinite(nb)) {
+    return na === nb
+  }
+  return String(a) === String(b)
+}
+
 function avaliar(
   tabela: Tabela,
   fixture: Record<string, Array<Record<string, unknown>>>,
@@ -212,8 +225,8 @@ function avaliar(
       if (!chave) throw new Error(`coluna desconhecida no fake: ${tabela}.${cond.campo}`)
       const valor = linha[chave]
       return cond.operador === "in"
-        ? cond.valores.some((v) => Number(v) === Number(valor))
-        : Number(cond.valores[0]) === Number(valor)
+        ? cond.valores.some((v) => valorIgual(v, valor))
+        : valorIgual(cond.valores[0], valor)
     }),
   )
 }
@@ -382,12 +395,22 @@ function realtimeFake() {
     eventos.push(evento as Record<string, unknown>)
     return { eventId: (evento as { eventId: string }).eventId, sequence: 1 }
   })
-  return { realtime: { publicar } as never, eventos }
+  // Espelha RealtimeService.publicarNotificacoes: mesmo registro no `eventos`
+  // (o evento real carrega type/sequence/eventId; o fake guarda o input).
+  const publicarNotificacoes = vi.fn((input: Record<string, unknown>) => {
+    eventos.push({ ...input, canal: "notifications" })
+  })
+  return { realtime: { publicar, publicarNotificacoes } as never, eventos }
 }
 
 function service(db: DbFakeApi, realtime?: { publicar: (e: unknown) => unknown }) {
   const factory = { obter: vi.fn(async () => db.db) } as unknown as ProjectDbFactory
-  return new FluxoTarefasGlobalService(factory, (realtime ?? realtimeFake().realtime) as never)
+  const rt = (realtime ?? realtimeFake().realtime) as never
+  return new FluxoTarefasGlobalService(
+    factory,
+    rt,
+    new NotificacoesService(factory, rt),
+  )
 }
 
 // ============================================================================
@@ -584,6 +607,174 @@ describe("FluxoTarefasGlobalService — devolver/concluir", () => {
       previousStatus: "delegada",
       status: "concluida",
     })
+  })
+})
+
+// ============================================================================
+// Notificações do sino na transição (macro #5, subtarefa 2)
+// ============================================================================
+
+describe("FluxoTarefasGlobalService — notificações de delegação/devolução", () => {
+  // Mesma org, com usuário global vinculado (sino) — e um sem vínculo.
+  const COLAB_NOTIFICADAS: Array<Record<string, unknown>> = [
+    { id: 5, organizacaoId: 10, nome: "Criador Silva", ativo: true, usuarioId: 55 },
+    { id: 7, organizacaoId: 10, nome: "Responsável Souza", ativo: true, usuarioId: 70 },
+    { id: 21, organizacaoId: 10, nome: "Alvo Notificado", ativo: true, usuarioId: 77 },
+    { id: 23, organizacaoId: 10, nome: "Sem Usuário", ativo: true },
+  ]
+
+  it("delegar: INSERT notificacao (delegacao → alvo) na MESMA transição + push notification.created pós-commit", async () => {
+    const db = dbFake({ tarefas: [TAREFA], colaboradores: COLAB_NOTIFICADAS })
+    const rt = realtimeFake()
+    const svc = service(db, rt.realtime)
+
+    const resultado = await svc.delegar(PROJETO, ctx("admin"), 42, { responsavelId: 21 })
+
+    const notif = db.insercoes.find((i) => i.tabela === "notificacoes")
+    expect(notif).toBeDefined()
+    expect(notif!.valores).toMatchObject({
+      organizacaoId: 10,
+      usuarioId: 77,
+      tipo: "delegacao",
+      tarefaId: 42,
+      lida: false,
+    })
+    expect(notif!.valores.titulo).toContain("Tarefa teste")
+    // AFTER o histórico — mesma transação, mesma chamada db.transaction.
+    expect(db.insercoes.findIndex((i) => i.tabela === "notificacoes")).toBeGreaterThan(
+      db.insercoes.findIndex((i) => i.tabela === "historico_tarefas"),
+    )
+    expect(db.transacoes).toEqual([{ inicio: true, fim: true, erro: null }])
+
+    expect(resultado.notificacao).toMatchObject({
+      usuarioId: 77,
+      tipo: "delegacao",
+      lida: false,
+    })
+    // Push só pós-commit, na janela dos eventos: status primeiro, sino depois.
+    const tipos = rt.eventos.map((e) => e.type)
+    expect(tipos).toEqual(["task.status.changed", "notification.created"])
+    const criado = rt.eventos[1]!
+    expect(criado.canal).toBe("notifications")
+    expect(criado.projectId).toBe(13)
+    expect(criado.usuarioId).toBe(77)
+    expect(
+      (criado.payload as { notification: Record<string, unknown> }).notification,
+    ).toMatchObject({ tipo: "delegacao", usuarioId: 77, tarefaId: 42 })
+  })
+
+  it("devolver: destinatário = autor da última delegação que entregou a tarefa a quem devolve", async () => {
+    const tarefa = { ...TAREFA, status: "delegada" as const }
+    const historico = [
+      {
+        id: 1,
+        tarefaId: 42,
+        tipoEvento: "delegacao",
+        deColaboradorId: 5,
+        paraColaboradorId: 7,
+        mensagem: null,
+        criadoEm: new Date("2026-11-24T10:00:00.000Z"),
+      },
+      // Ruído: evento que NÃO entregou a 7 (não deve ser escolhido).
+      {
+        id: 2,
+        tarefaId: 42,
+        tipoEvento: "reatribuicao",
+        deColaboradorId: 5,
+        paraColaboradorId: 21,
+        mensagem: null,
+        criadoEm: new Date("2026-11-24T11:00:00.000Z"),
+      },
+    ]
+    const db = dbFake({
+      tarefas: [tarefa],
+      colaboradores: COLAB_NOTIFICADAS,
+      historico_tarefas: historico,
+    })
+    const rt = realtimeFake()
+    const svc = service(db, rt.realtime)
+
+    const resultado = await svc.devolver(PROJETO, ctx("operador", 7), 42, {
+      sabor: "precisa_informacoes",
+      mensagem: "Falta o CPF do cliente.",
+    })
+
+    expect(resultado.notificacao).toMatchObject({ usuarioId: 55, tipo: "devolucao" })
+    const notif = db.insercoes.find((i) => i.tabela === "notificacoes")
+    expect(notif!.valores).toMatchObject({ usuarioId: 55, tipo: "devolucao", tarefaId: 42 })
+    expect(notif!.valores.titulo).toContain("devolvida")
+    expect(notif!.valores.corpo).toContain("Falta o CPF do cliente.")
+    expect(rt.eventos.some((e) => e.type === "notification.created")).toBe(true)
+  })
+
+  it("devolver sem histórico de delegação: fallback = criador da tarefa", async () => {
+    const tarefa = { ...TAREFA, status: "delegada" as const }
+    const db = dbFake({
+      tarefas: [tarefa],
+      colaboradores: COLAB_NOTIFICADAS,
+      historico_tarefas: [],
+    })
+    const svc = service(db, realtimeFake().realtime)
+
+    const resultado = await svc.devolver(PROJETO, ctx("operador", 7), 42, {
+      sabor: "concluida",
+      mensagem: "Pronto.",
+    })
+    expect(resultado.notificacao).toMatchObject({ usuarioId: 55, tipo: "devolucao" })
+  })
+
+  it("destinatário sem usuario_id (sem usuário global): pula sino, transição intata", async () => {
+    const db = dbFake({ tarefas: [TAREFA], colaboradores: COLAB_NOTIFICADAS })
+    const rt = realtimeFake()
+    const svc = service(db, rt.realtime)
+
+    const resultado = await svc.delegar(PROJETO, ctx("admin"), 42, { responsavelId: 23 })
+    expect(resultado.status).toBe("delegada")
+    expect(resultado.notificacao).toBeNull()
+    expect(db.insercoes.some((i) => i.tabela === "notificacoes")).toBe(false)
+    expect(rt.eventos.map((e) => e.type)).toEqual(["task.status.changed"])
+  })
+
+  it("cancelar não gera notificação (fora do critério)", async () => {
+    const db = dbFake({ tarefas: [TAREFA], colaboradores: COLAB_NOTIFICADAS })
+    const rt = realtimeFake()
+    const svc = service(db, rt.realtime)
+
+    const resultado = await svc.cancelar(PROJETO, ctx("operador", 5), 42, {
+      motivo: "Duplicada.",
+    })
+    expect(resultado.notificacao).toBeNull()
+    expect(db.insercoes.some((i) => i.tabela === "notificacoes")).toBe(false)
+    expect(rt.eventos.some((e) => e.type === "notification.created")).toBe(false)
+  })
+
+  it("devolução cujo delegador é o próprio autor: sem autoflagelo de sino", async () => {
+    const tarefa = { ...TAREFA, status: "delegada" as const }
+    const historico = [
+      {
+        id: 1,
+        tarefaId: 42,
+        tipoEvento: "delegacao",
+        deColaboradorId: 7,
+        paraColaboradorId: 7,
+        mensagem: null,
+        criadoEm: new Date("2026-11-24T10:00:00.000Z"),
+      },
+    ]
+    const db = dbFake({
+      tarefas: [tarefa],
+      colaboradores: COLAB_NOTIFICADAS,
+      historico_tarefas: historico,
+    })
+    const svc = service(db, realtimeFake().realtime)
+
+    const resultado = await svc.devolver(PROJETO, ctx("operador", 7), 42, {
+      sabor: "concluida",
+      mensagem: "Fechei sozinho.",
+    })
+    expect(resultado.status).toBe("concluida")
+    expect(resultado.notificacao).toBeNull()
+    expect(db.insercoes.some((i) => i.tabela === "notificacoes")).toBe(false)
   })
 })
 

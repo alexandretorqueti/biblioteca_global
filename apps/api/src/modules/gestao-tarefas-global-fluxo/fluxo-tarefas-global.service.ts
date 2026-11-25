@@ -23,7 +23,15 @@
  * - Realtime (tipos existentes em packages/shared/src/realtime.ts — schema
  *   NÃO alterado): `task.status.changed` em toda transição persistida e
  *   `chat.message.created` no envio de mensagem (eventId uuid, projectId do
- *   token, taskId).
+ *   token, taskId);
+ * - Notificações do sino (macro #5, subtarefa 2): `delegar` → tipo
+ *   `delegacao` para o alvo; `devolver` (todos os sabores, incluindo o
+ *   atalho `/concluir`) → tipo `devolucao` para o delegador (último evento
+ *   de delegação/reatribuição que entregou a tarefa a quem devolve; na
+ *   falta dele, o criador). A INSERT acontece na MESMA transação da
+ *   transição; o push `notification.created` só após o commit. `cancelar`
+ *   não notifica (fora do critério). Destinatário sem `usuario_id` ou igual
+ *   ao autor da ação → pulado (nunca quebra a transição).
  */
 import {
   BadRequestException,
@@ -31,9 +39,10 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common"
-import { and, asc, eq, inArray } from "drizzle-orm"
+import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import { randomUUID } from "node:crypto"
 import type { Perfil, ProjetoResumo } from "@biblioteca-global/shared"
 import {
@@ -57,6 +66,11 @@ import {
   type ProjectDbFactory,
 } from "../crud/project-db.factory"
 import { RealtimeService } from "../realtime/realtime.service"
+import {
+  NotificacoesService,
+  type NotificacaoCriada,
+  type TipoNotificacao,
+} from "../gestao-tarefas-global-notificacoes/notificacoes.service"
 import type {
   CancelarBody,
   DelegarBody,
@@ -84,6 +98,8 @@ export interface ResultadoTransicao {
     paraColaboradorId: number | null
     mensagem: string | null
   }
+  /** Notificação do sino criada nesta transição (null quando não aplicável). */
+  notificacao: NotificacaoCriada | null
 }
 
 /** Item do histórico cronológico (append-only). */
@@ -112,6 +128,7 @@ interface LinhaTarefa {
   organizacaoId: number
   responsavelId: number
   criadoPorId: number
+  titulo: string
   status: StatusTarefa
 }
 
@@ -120,9 +137,12 @@ const PERFIS_ADMIN = new Set<Perfil>(["admin", "gerente"])
 
 @Injectable()
 export class FluxoTarefasGlobalService {
+  private readonly logger = new Logger(FluxoTarefasGlobalService.name)
+
   constructor(
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
     private readonly realtime: RealtimeService,
+    private readonly notificacoes: NotificacoesService,
   ) {}
 
   // ==========================================================================
@@ -183,6 +203,7 @@ export class FluxoTarefasGlobalService {
         organizacaoId: tarefas.organizacaoId,
         responsavelId: tarefas.responsavelId,
         criadoPorId: tarefas.criadoPorId,
+        titulo: tarefas.titulo,
         status: tarefas.status,
       })
       .from(tarefas)
@@ -198,6 +219,7 @@ export class FluxoTarefasGlobalService {
       organizacaoId: Number(linha.organizacaoId),
       responsavelId: Number(linha.responsavelId),
       criadoPorId: Number(linha.criadoPorId),
+      titulo: linha.titulo,
       status: linha.status as StatusTarefa,
     }
   }
@@ -352,14 +374,39 @@ export class FluxoTarefasGlobalService {
           })
         void insercao
 
-        return resultado
+        // Notificações do sino (macro #5, subtarefa 2): INSERT na MESMA
+        // transação da mudança de estado — sem commit, sem notificação
+        // (retry limpo se a transição falhar). O push sai só após o commit.
+        const notificacao = await this.criarNotificacaoDeFluxo(txDb, {
+          acao,
+          acaoLabel,
+          tarefaId,
+          tarefaTitulo: tarefa.titulo,
+          criadoPorId: tarefa.criadoPorId,
+          responsavelAnteriorId: Number(atual.responsavelId),
+          responsavelAlvoId:
+            acao === "delegar" && responsavelAlvo
+              ? Number(responsavelAlvo.id)
+              : null,
+          organizacaoId: ctx.organizacaoId,
+          novoStatus: resultado.efeito.status,
+          mensagem: resultado.evento.mensagem,
+          colaboradorIdAutor: ctx.colaboradorId,
+          agora,
+        })
+
+        return { resultado, notificacao }
       },
     )
 
-    const ok = resultado as Extract<
-      Awaited<ReturnType<typeof transicionar>>,
-      { ok: true }
-    >
+    const txResultado = resultado as {
+      resultado: Extract<
+        Awaited<ReturnType<typeof transicionar>>,
+        { ok: true }
+      >
+      notificacao: NotificacaoCriada | null
+    }
+    const ok = txResultado.resultado
     // Evento realtime SÓ após o commit (tipos do schema compartilhado).
     this.realtime.publicar({
       eventId: randomUUID(),
@@ -373,6 +420,11 @@ export class FluxoTarefasGlobalService {
         status: ok.efeito.status,
       },
     })
+    // Push `notification.created` SÓ após commit — canal `notifications`,
+    // escopo (projectId, usuarioId) do DESTINATÁRIO (subtarefa 2).
+    if (txResultado.notificacao) {
+      this.notificacoes.publicarCriada(projeto.id, txResultado.notificacao)
+    }
 
     return {
       tarefaId,
@@ -388,7 +440,124 @@ export class FluxoTarefasGlobalService {
         paraColaboradorId: ok.evento.paraColaboradorId,
         mensagem: ok.evento.mensagem,
       },
+      notificacao: txResultado.notificacao,
     }
+  }
+
+  /**
+   * Notificação do sino para a transição (macro #5, subtarefa 2) — INSERIDA
+   * NA TRANSAÇÃO do chamador (`txDb`), nunca em transação própria:
+   * - `delegar` → `delegacao` para o responsável-alvo;
+   * - `devolver`/atalho `concluir` (ações `devolver_*` da máquina) →
+   *   `devolucao` para o delegador;
+   * - `cancelar` → nenhuma (tarefa cancelada não gera sino — fora do
+   *   critério).
+   * Pula silenciosamente (log debug) quando o destinatário é o próprio
+   * autor ou quando o colaborador-destino não tem `usuario_id` (sem usuário
+   * global na plataforma = sem sino). Nunca lança: falha aqui quebraria a
+   * transição, e notificação é consequência, não pré-requisito.
+   */
+  private async criarNotificacaoDeFluxo(
+    txDb: Awaited<ReturnType<ProjectDbFactory["obter"]>>,
+    input: {
+      acao: AcaoFluxo
+      acaoLabel: "delegar" | "devolver" | "concluir" | "cancelar"
+      tarefaId: number
+      tarefaTitulo: string
+      criadoPorId: number
+      responsavelAnteriorId: number
+      responsavelAlvoId: number | null
+      organizacaoId: number
+      novoStatus: StatusTarefa
+      mensagem: string | null
+      colaboradorIdAutor: number
+      agora: Date
+    },
+  ): Promise<NotificacaoCriada | null> {
+    const tipo: TipoNotificacao | null =
+      input.acaoLabel === "delegar"
+        ? "delegacao"
+        : input.acao.startsWith("devolver")
+          ? "devolucao"
+          : null
+    if (!tipo) return null
+
+    let destinatarioColaboradorId: number | null
+    let titulo: string
+    let corpo: string
+    if (tipo === "delegacao") {
+      destinatarioColaboradorId = input.responsavelAlvoId
+      titulo = `Tarefa delegada para você: ${input.tarefaTitulo}`
+      corpo = `Você agora é o responsável pela tarefa "${input.tarefaTitulo}" (#${input.tarefaId}).`
+    } else {
+      destinatarioColaboradorId = await this.resolverDelegadorDaDevolucao(
+        txDb,
+        input.tarefaId,
+        input.responsavelAnteriorId,
+        input.criadoPorId,
+      )
+      titulo = `Tarefa devolvida: ${input.tarefaTitulo}`
+      corpo =
+        `A tarefa "${input.tarefaTitulo}" (#${input.tarefaId}) foi devolvida ` +
+        `para você (status: ${input.novoStatus}). Mensagem: ${input.mensagem ?? "-"}`
+    }
+
+    if (
+      destinatarioColaboradorId == null ||
+      destinatarioColaboradorId === input.colaboradorIdAutor
+    ) {
+      return null
+    }
+
+    const [destinatario] = await txDb
+      .select({ usuarioId: colaboradores.usuarioId })
+      .from(colaboradores)
+      .where(eq(colaboradores.id, destinatarioColaboradorId))
+      .limit(1)
+    if (destinatario?.usuarioId == null) {
+      this.logger.debug(
+        `notificação de ${tipo} pulada: colaborador ${destinatarioColaboradorId} sem usuario_id (tarefa ${input.tarefaId})`,
+      )
+      return null
+    }
+
+    return this.notificacoes.inserirEmTransacao(txDb, {
+      organizacaoId: input.organizacaoId,
+      usuarioId: Number(destinatario.usuarioId),
+      titulo,
+      corpo,
+      tipo,
+      tarefaId: input.tarefaId,
+      criadoEm: input.agora,
+    })
+  }
+
+  /**
+   * Delegador de uma devolução = autor da ÚLTIMA delegação/reatribuição que
+   * colocou a tarefa nas mãos de quem está devolvendo; sem tal evento
+   * (tarefa criada já com responsável, histórico antigo), o criador.
+   */
+  private async resolverDelegadorDaDevolucao(
+    txDb: Awaited<ReturnType<ProjectDbFactory["obter"]>>,
+    tarefaId: number,
+    responsavelQueDevolveId: number,
+    criadoPorId: number,
+  ): Promise<number> {
+    const [evento] = await txDb
+      .select({ deColaboradorId: historicoTarefas.deColaboradorId })
+      .from(historicoTarefas)
+      .where(
+        and(
+          eq(historicoTarefas.tarefaId, tarefaId),
+          inArray(historicoTarefas.tipoEvento, ["delegacao", "reatribuicao"]),
+          eq(historicoTarefas.paraColaboradorId, responsavelQueDevolveId),
+        ),
+      )
+      .orderBy(desc(historicoTarefas.criadoEm))
+      .limit(1)
+    return evento?.deColaboradorId != null
+      ? Number(evento.deColaboradorId)
+      : criadoPorId
   }
 
   /** POST .../delegar — troca o responsável único (1ª delegação ou reatribuição). */
