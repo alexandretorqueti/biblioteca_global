@@ -25,10 +25,16 @@ const SUBTASK_VERIFICATION_BLOCK_REASON = 'subtask_verification_failed'
  * como 'blocked' (SubtaskTerminalFailureBlocker). Resolver o bloqueio precisa
  * reabrir exatamente a subtarefa afetada — sem isso, a tarefa fica inerte com
  * as subtarefas seguintes pendentes (incidente 1403/1404/1405).
+ *
+ * `development_completion_protocol_exhausted` (blockIncompleteDevelopmentSession,
+ * incidente 1610/macro-gestao-de-tarefas-global-8) também marca a subtarefa como
+ * 'blocked': sem entrar neste conjunto, o desbloqueio via external-resolution caía
+ * no ramo noop e a subtarefa seguia 'blocked' para sempre.
  */
 const SUBTASK_TERMINAL_BLOCK_REASONS = new Set([
   'worker_exhausted',
   'subtask_terminal_failure',
+  'development_completion_protocol_exhausted',
 ])
 
 /**
@@ -56,7 +62,8 @@ type TerminalReopenOutcome =
  *   reabrir a análise (claim atômico já protege contra duplicidade);
  * - `subtask_verification_failed` → subtarefas bloqueadas voltam a
  *   `verifying` e recebem `SUBTASK_VERIFICATION_REQUESTED`;
- * - `worker_exhausted`/`subtask_terminal_failure` → a subtarefa `failed`/
+ * - `worker_exhausted`/`subtask_terminal_failure`/
+ *   `development_completion_protocol_exhausted` → a subtarefa `failed`/
  *   `blocked` do bloqueio volta a `pending` (resultado limpo) e a tarefa
  *   recebe `TASK_READY_FOR_PROGRAMMING` na mesma transação, para o
  *   `reserveNextSubtask` retomar exatamente da subtarefa reaberta;
