@@ -23,6 +23,12 @@ export interface WorkerLauncherConfig {
   globalTimeoutMs: number
   /** DEV pode entregar a sessão ao reconciliador em vez de encerrá-la por timeout. */
   handoffSessionOnTimeout: boolean
+  /**
+   * Máximo de pedidos de continuação na MESMA sessão quando o run para sem
+   * resposta final (ex.: `timeout` recuperável do Gateway), sem consumir
+   * tentativa da cadeia. Ao exceder, a tentativa volta a ser consumida.
+   */
+  maxNoAnswerNudges?: number
   sandboxRoot: string // Raiz de worktrees montada (opção a)
   /** Roteia a decisão terminal H6/H7 pelo catálogo quando fornecido. */
   governedFailureHandler?: GovernedFailureHandler
@@ -83,6 +89,7 @@ export class WorkerLauncher {
       timeoutMs: config.timeoutMs ?? 4_800_000, // 80 minutos
       globalTimeoutMs: config.globalTimeoutMs ?? Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS ?? 5_100_000), // 85 minutos
       handoffSessionOnTimeout: config.handoffSessionOnTimeout ?? false,
+      maxNoAnswerNudges: config.maxNoAnswerNudges ?? 2,
       sandboxRoot: config.sandboxRoot ?? '/data/workspace/agentes/motor-v3/worktrees',
       governedFailureHandler: config.governedFailureHandler,
     }
@@ -114,6 +121,7 @@ export class WorkerLauncher {
     const failures: Array<{ attempt: number; model?: string; error: string }> = []
     let correctiveContext = ''
     let continuationPrompt: string | null = null
+    let noAnswerNudges = 0
     let wrongCheckoutDiagnostic: WrongCheckoutDiagnostic | undefined
     let reusableSessionModel: string | undefined
     let legacyEvidenceRebriefIssued = false
@@ -222,6 +230,28 @@ export class WorkerLauncher {
         }
 
         const response = waitResult.data?.response ?? ''
+
+        // 4.5. Parada sem resposta final (ex.: `timeout` recuperável do Gateway):
+        // a sessão já contém o trabalho e o contexto. Pede-se conclusão na MESMA
+        // sessão sem queimar tentativa da cadeia (incidente task-p2-1067). O nudge
+        // é limitado para não laçar indefinidamente; excedido o teto, a tentativa
+        // volta a ser consumida e a cadeia pode evoluir.
+        if (!response.trim()) {
+          if (noAnswerNudges >= (this.config.maxNoAnswerNudges ?? 2)) {
+            lastError = 'A sessão encerrou sem resposta final após os pedidos de continuação'
+            context.logger?.warn('Limite de nudges sem resposta atingido; consumindo tentativa', { attempts, noAnswerNudges })
+            failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+            context.generation++
+            continue
+          }
+          noAnswerNudges++
+          context.logger?.warn('Sessão encerrou sem resposta final; pedindo conclusão na mesma sessão', { attempts, noAnswerNudges })
+          lastError = 'A sessão encerrou sem resposta final'
+          continuationPrompt = buildContinuationPrompt(taskDescription, context)
+          reusableSessionModel = model
+          attempts--
+          continue
+        }
 
         // 5. Parse da resposta (detecta ::DONE::)
         const parseResult = await parseReply.handler(context, { response })
@@ -352,15 +382,7 @@ export class WorkerLauncher {
           context.logger?.info('Agente encerrou sem ::DONE::; solicitando conclusão na mesma sessão', { attempts })
           lastError = 'O programador encerrou sem o marcador ::DONE::'
           failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
-          const originalPrompt = normalizePrompt(taskDescription)
-          continuationPrompt = [
-            originalPrompt.context,
-            originalPrompt.header,
-            '',
-            'A execução anterior foi encerrada sem o protocolo de conclusão.',
-            `Revise o trabalho já feito no workspace ${context.worktreePath}, conclua as validações necessárias e responda com um resumo final.`,
-            'Inclua obrigatoriamente o marcador ::DONE:: na resposta final.',
-          ].filter((part): part is string => Boolean(part)).join('\n')
+          continuationPrompt = buildContinuationPrompt(taskDescription, context)
           reusableSessionModel = model
           context.generation++
           continue
@@ -549,6 +571,23 @@ export function hasExternalOperationEvidence(response: string): boolean {
   const what = response.match(/(?:^|\n)\s*(?:O que foi feito|What was done)\s*:\s*([\s\S]*?)(?=\n\s*(?:Como verificar|How to verify)\s*:|$)/i)?.[1]?.trim()
   const how = response.match(/(?:^|\n)\s*(?:Como verificar|How to verify)\s*:\s*([\s\S]*)$/i)?.[1]?.trim()
   return Boolean(what && how && !/^::DONE::$/i.test(what) && !/^::DONE::$/i.test(how))
+}
+
+/**
+ * Pedido de continuação enviado à MESMA sessão DEV: o trabalho e o contexto já
+ * estão lá; o agente só precisa concluir, validar e responder com ::DONE::.
+ * Usado quando o run para sem resposta final ou sem o marcador de conclusão.
+ */
+function buildContinuationPrompt(taskDescription: string | DevelopmentPrompt, context: PrimitiveContext): string {
+  const original = normalizePrompt(taskDescription)
+  return [
+    original.context,
+    original.header,
+    '',
+    'A execução anterior foi encerrada sem o protocolo de conclusão.',
+    `Revise o trabalho já feito no workspace ${context.worktreePath}, conclua as validações necessárias e responda com um resumo final.`,
+    'Inclua obrigatoriamente o marcador ::DONE:: na resposta final.',
+  ].filter((part): part is string => Boolean(part)).join('\n')
 }
 
 function normalizePrompt(prompt: string | DevelopmentPrompt): DevelopmentPrompt {

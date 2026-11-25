@@ -3,6 +3,13 @@ import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 
 const DEFAULT_STALE_FAILED_GRACE_MS = 60_000
 
+// `timeout` do Console é parada recuperável do run (timeout de execução do
+// Gateway), não falha terminal: a sessão preserva histórico, worktree e
+// contexto, e o caminho correto é o protocolo de continuação na MESMA sessão.
+// Como falha terminal, cada timeout queimava uma tentativa e abria sessão nova
+// descartando o progresso (incidente task-p2-1067/subtarefa 1603, 2026-11-25).
+const stoppedWithoutAnswer = new Set(['timeout'])
+
 export class ConsoleHttpApi implements AnalystConsole {
   private readonly pendingResponses = new Map<string, { messageIds: Set<string>; sentAt: number }>()
 
@@ -37,9 +44,12 @@ export class ConsoleHttpApi implements AnalystConsole {
     const status = await this.request<{ status?: string; state?: string; hasActiveRun?: boolean; endedAt?: unknown; errorMessage?: string; message?: string; errorCode?: string; error?: unknown; failure?: unknown; details?: unknown }>('/api/sessions/describe', {
       method: 'GET', query: { key: session.sessionKey, agentId: session.agentId },
     })
-    const terminalFailure = new Set(['failed', 'error', 'timeout', 'cancelled', 'canceled'])
-    const failed = terminalFailure.has(String(status.status ?? '').toLowerCase()) || terminalFailure.has(String(status.state ?? '').toLowerCase())
-    const complete = !failed && (status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false || status.endedAt !== undefined)
+    const terminalFailure = new Set(['failed', 'error', 'cancelled', 'canceled'])
+    const lowerStatus = String(status.status ?? '').toLowerCase()
+    const lowerState = String(status.state ?? '').toLowerCase()
+    const stopped = stoppedWithoutAnswer.has(lowerStatus) || stoppedWithoutAnswer.has(lowerState)
+    const failed = terminalFailure.has(lowerStatus) || terminalFailure.has(lowerState)
+    const complete = !failed && (stopped || status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false || status.endedAt !== undefined)
     if (!complete && !failed) {
       const history = await this.history(session)
       return { isComplete: false, activity: this.activity(history.messages ?? []) }
@@ -107,6 +117,9 @@ export class ConsoleHttpApi implements AnalystConsole {
       this.pendingResponses.delete(this.sessionKey(session))
       return { isComplete: false, isFailed: true, error: error.slice(0, 800) }
     }
+    // `timeout` com run ativo é flag de ciclo anterior: enquanto uma execução
+    // nova está em andamento, não se declara conclusão (mesma regra de `failed`).
+    if (stopped && status.hasActiveRun === true) return { isComplete: false, activity: this.activity(messages) }
     // Em idle o Console pode estar entre o envio e a criação da resposta. Já
     // um estado terminal (`done`/`endedAt`) sem assistente final significa que
     // o agente parou após ferramenta: o reconciliador precisa vê-lo como
@@ -120,7 +133,7 @@ export class ConsoleHttpApi implements AnalystConsole {
         message.role !== 'user' && this.isResponseAfter(message, marker),
       )
       if (marker && !hasAgentActivityAfterSend) return { isComplete: false }
-      const terminalCompleted = status.status === 'done' || status.state === 'done' || status.endedAt !== undefined
+      const terminalCompleted = stopped || status.status === 'done' || status.state === 'done' || status.endedAt !== undefined
       return terminalCompleted ? { isComplete: true } : { isComplete: false }
     }
     this.pendingResponses.delete(this.sessionKey(session))

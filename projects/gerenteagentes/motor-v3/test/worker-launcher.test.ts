@@ -343,6 +343,41 @@ describe('WorkerLauncher', () => {
     }
   })
 
+  it('pede conclusão na mesma sessão quando o run para sem resposta final, sem queimar tentativa', async () => {
+    mocks.createSession.handler.mockImplementation(async (primitiveContext: PrimitiveContext) => {
+      primitiveContext.sessionId = 'timeout-nudge-session'
+      return { success: true }
+    })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler
+      .mockResolvedValueOnce({ success: true, data: {} }) // `timeout` recuperável: run parou sem responder
+      .mockResolvedValueOnce({ success: true, data: { response: 'Finalizei as validações pendentes. ::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: true } })
+    mocks.runBuild.handler.mockResolvedValue({ success: true })
+
+    const result = await launcher.executeTask(mockContext, 'Implementar feature X')
+
+    expect(result).toMatchObject({ success: true, attempts: 1 })
+    expect(mocks.createSession.handler).toHaveBeenCalledTimes(1)
+    expect(mocks.sendMessage.handler).toHaveBeenCalledTimes(2)
+    expect(mocks.sendMessage.handler.mock.calls[1][1].message).toContain('Inclua obrigatoriamente o marcador ::DONE::')
+  })
+
+  it('esgota o teto de nudges sem resposta e consome a tentativa para a cadeia poder evoluir', async () => {
+    launcher = new WorkerLauncher({ maxAttempts: 1, timeoutMs: 1000, sandboxRoot: '/tmp/sandbox', maxNoAnswerNudges: 0 })
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: {} })
+
+    const result = await launcher.executeTask(mockContext, 'Implementar feature Y')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('sem resposta final')
+    expect(mocks.sendMessage.handler).toHaveBeenCalledTimes(1)
+    expect(result.failures?.at(-1)?.error).toContain('sem resposta final')
+  })
+
   it('mantém a falha por ausência de diff para code_change explícito', async () => {
     launcher = new WorkerLauncher({ maxAttempts: 1 })
     mocks.createSession.handler.mockResolvedValue({ success: true })

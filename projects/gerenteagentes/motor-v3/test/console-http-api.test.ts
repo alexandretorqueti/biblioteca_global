@@ -41,14 +41,39 @@ describe('ConsoleHttpApi', () => {
     expect(status.error).toBe('429 quota exhausted')
   })
 
-  it('trata timeout terminal como falha explícita', async () => {
+  it('trata timeout como parada recuperável sem resposta final (protocolo de continuação)', async () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse({ status: 'timeout', endedAt: 1 }))
       .mockResolvedValueOnce(jsonResponse({ messages: [] })))
     const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
 
+    // Não é falha terminal: a sessão sobrevive e o chamador pede conclusão nela.
     await expect(api.getSessionStatus({ sessionId: 's3', sessionKey: 'agent:a:k3', agentId: 'a' }))
-      .resolves.toEqual({ isComplete: false, isFailed: true, error: 'Sessão do Console terminou com status timeout' })
+      .resolves.toEqual({ isComplete: true })
+  })
+
+  it('recupera resposta final utilizável de sessão com timeout', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'timeout', endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({
+        messages: [{ id: 'm9', role: 'assistant', stopReason: 'stop', content: 'Implementação concluída com testes passando. ::DONE::' }],
+      })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's3b', sessionKey: 'agent:a:k3b', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: true, lastResponse: 'Implementação concluída com testes passando. ::DONE::' })
+  })
+
+  it('não declara conclusão de timeout enquanto há run ativo', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'timeout', hasActiveRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    const status = await api.getSessionStatus({ sessionId: 's3c', sessionKey: 'agent:a:k3c', agentId: 'a' })
+
+    expect(status.isComplete).toBe(false)
+    expect(status.isFailed).toBeUndefined()
   })
 
   it('expõe sessão done sem resposta final para o protocolo de continuação', async () => {
