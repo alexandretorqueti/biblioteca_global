@@ -93,6 +93,24 @@ describe("config do projeto gerenteagentes", () => {
     expect(slug).toMatchObject({ required: true, minLength: 2, maxLength: 100 })
   })
 
+  it("oculta o campo especificacao na tabela principal mantendo-o no formulário de projetos", () => {
+    const grupo = config.groups.find((g) => g.id === "projetos")!
+    const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
+    const especificacao = tela.fields!.find((field) => field.name === "especificacao")
+
+    expect(especificacao, "campo especificacao deve existir na tela projetos-list").toBeDefined()
+    expect(especificacao).toMatchObject({
+      label: "Especificação",
+      type: "textarea",
+      gridVisible: false,
+    })
+
+    // gridVisible: false remove a coluna da tabela principal sem retirar o campo dos
+    // diálogos de inclusão/edição (não pode ter insertable/editable: false).
+    expect(especificacao!.insertable).not.toBe(false)
+    expect(especificacao!.editable).not.toBe(false)
+  })
+
   it("define a tela tarefas como cadastro apontando para o resource tarefas", () => {
     const tela = localizarTelaTarefas() as unknown as ChildRoute
 

@@ -117,6 +117,7 @@ export const config: GeradorSistemaConfig = {
               { name: "agenteId", label: "Agente vinculado", type: "multipleChoice", gridVisible: true, helperText: "Agente que executará as tarefas deste projeto. O motor usa COALESCE(openclaw_agent_id, nome) para abrir a sessão.", multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" } },
               { name: "descricao", label: "Descrição / Regras do projeto", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
               { name: "regras", label: "Regras extras (complementam a descrição)", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "especificacao", label: "Especificação", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
               { name: "contatoId", label: "Contato responsável", type: "number", gridVisible: false, helperText: "ID do contato em projeto_640.contatos." },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
               { name: "plataformaProjetoId", label: "ID na plataforma (core.projetos)", type: "number", gridVisible: false, helperText: "Vínculo com core.projetos.id. Usado pela biblioteca para rotear API." },
