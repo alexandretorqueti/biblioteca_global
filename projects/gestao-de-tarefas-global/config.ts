@@ -26,6 +26,13 @@
  *   tarefas — a grid de filhos do Cadastro é somente leitura (histórico é
  *   append-only por decisão). Telas custom chegam nas macros 3–6.
  * - notificacoes não tem tela (consumida pelo sino custom — macro 5).
+ * - Ações de fluxo na grid + tela custom (macro 3, subtarefa 1589):
+ *   `rowActions` concluir/cancelar (confirm + disabledWhen nos terminais) e
+ *   childRoute `componentId: gestao-de-tarefas-global-tarefa-fluxo` (telas/
+ *   TarefaFluxoScreen.tsx, exposta por screens/registry.ts). SYNC DE CONFIG
+ *   (duas fontes, MANUAL_CONFIG_PROJETOS §1): versionado AQUI → core
+ *   (projetos.config id 8496) via `npm run db:seed` (discover+upsert
+ *   idempotente da config gerada) — nunca SQL ad-hoc na tabela.
  * - status de tarefa NÃO é editável na tela de cadastro (insertable/editable
  *   false): transitions só via fluxo custom (macro 3). O default "aberta" vem
  *   do schema na criação.
@@ -258,6 +265,48 @@ const configBase: GeradorSistemaConfig = {
               },
               newLabel: "Nova tarefa",
             },
+            // Ações rápidas na grid (macro 3, subtarefa 1589): concluir/
+            // cancelar SEM body — os endpoints custom (1588) derivam tudo da
+            // sessão; `confirm` abre dialog antes de executar (Cadastro) e
+            // `disabledWhen` desabilita nos estados terminais (avaliado por
+            // utils/disabledWhen.ts contra a linha — sem eval). A máquina de
+            // estados no backend revalida (409) — a grid só reflete o custo
+            // zero de UX dos estados que nunca aceitariam a transição.
+            rowActions: [
+              {
+                id: "concluir",
+                label: "Concluir",
+                method: "POST",
+                path: "/api/gestao-de-tarefas-global/tarefas/:id/concluir",
+                confirm:
+                  "Concluir esta tarefa? O status muda para concluída e a conclusão entra no histórico — tarefa concluída não reabre pelo fluxo.",
+                disabledWhen: 'status === "concluida" || status === "cancelada"',
+              },
+              {
+                id: "cancelar",
+                label: "Cancelar",
+                method: "POST",
+                path: "/api/gestao-de-tarefas-global/tarefas/:id/cancelar",
+                confirm:
+                  "Cancelar esta tarefa? Cancelamento é terminal — se o trabalho ainda precisa acontecer, crie uma nova tarefa.",
+                disabledWhen: 'status === "concluida" || status === "cancelada"',
+              },
+            ],
+            // Tela custom do fluxo (macro 3, subtarefa 1589): delegar em
+            // cadeia, devolver em 3 sabores, histórico somente leitura e chat
+            // por tarefa. Abre a partir da LINHA da tarefa (filterField "id"
+            // — a própria tarefa é o contexto). Registry: screens/registry.ts.
+            childRoutes: [
+              {
+                id: "tarefa-fluxo",
+                label: "Abrir tarefa",
+                icon: "description",
+                targetResource: "tarefas",
+                filterField: "id",
+                title: "Fluxo da tarefa",
+                componentId: "gestao-de-tarefas-global-tarefa-fluxo",
+              },
+            ],
             // Master-detail: estruturas de chat/histórico/anexos (somente
             // leitura na grid de filhos; telas custom virão nas macros 3–6).
             children: [

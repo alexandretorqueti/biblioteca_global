@@ -104,6 +104,12 @@ export default function Cadastro<T extends EntityRecord>({
   } | null>(null)
   /** Ação customizada em execução (id) — desabilita todos os botões de ação. */
   const [executandoAcao, setExecutandoAcao] = useState<string | null>(null)
+  // Diálogo de confirmação de ações custom (macro 3): quando a action declara
+  // `confirm`, a execução só acontece depois do "Executar" no dialog.
+  const [acaoConfirmar, setAcaoConfirmar] = useState<{
+    action: CustomAction
+    row?: EntityRecord
+  } | null>(null)
   /** Feedback por ação customizada (success/error), chave `${rowId}_${actionId}` — para ações globais a chave é `${actionId}`. */
   const [acaoFeedback, setAcaoFeedback] = useState<
     Record<string, { type: "success" | "error"; message: string }>
@@ -340,6 +346,19 @@ export default function Cadastro<T extends EntityRecord>({
     }
   }
 
+  /**
+   * Porta de entrada das ações (globais e por linha): com `confirm` abre o
+   * dialog; sem, executa direto. O dialog reproduz a mesma pipeline de
+   * feedback (sucesso/erro) de `executarAcao`.
+   */
+  const solicitarAcao = (action: CustomAction, row?: EntityRecord): void => {
+    if (action.confirm) {
+      setAcaoConfirmar({ action, row })
+      return
+    }
+    void executarAcao(action, row)
+  }
+
   const initialValues = useMemo(
     () =>
       selectedRow
@@ -475,7 +494,7 @@ export default function Cadastro<T extends EntityRecord>({
                 <Button
                   variant="outlined"
                   disabled={executandoAcao !== null || !executeAction}
-                  onClick={() => void executarAcao(action)}
+                  onClick={() => solicitarAcao(action)}
                 >
                   {executando ? `Executando ${action.label}...` : action.label}
                 </Button>
@@ -511,14 +530,14 @@ export default function Cadastro<T extends EntityRecord>({
         childRoutes={childRoutes}
         onChildRouteClick={onChildRouteClick}
         rowActions={rowActions}
-        onRowAction={(action, row) => void executarAcao(action, row)}
+        onRowAction={(action, row) => solicitarAcao(action, row)}
         executandoAcao={executandoAcao}
         acaoFeedback={acaoFeedback}
       />
 
       <Dialog
         open={formOpen}
-        onClose={(ev, reason) => {
+        onClose={(_ev, reason) => {
           if (reason === "backdropClick") return
           if (actionState !== null) return
           setFormOpen(false)
@@ -639,6 +658,37 @@ export default function Cadastro<T extends EntityRecord>({
 
           <Button color="error" variant="contained" disabled={actionState !== null} onClick={() => void confirmDelete()}>
             {actionState === "delete" ? "Excluindo..." : "Excluir"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Diálogo de confirmação de ação custom (confirm) — global ou por linha. */}
+      <Dialog
+        open={acaoConfirmar !== null}
+        onClose={() => (executandoAcao === null ? setAcaoConfirmar(null) : undefined)}
+      >
+        <DialogTitle>
+          {acaoConfirmar?.action.label ?? "Confirmar ação"}
+        </DialogTitle>
+
+        <DialogContent>
+          <Typography>{acaoConfirmar?.action.confirm}</Typography>
+        </DialogContent>
+
+        <DialogActions>
+          <Button disabled={executandoAcao !== null} onClick={() => setAcaoConfirmar(null)}>
+            Voltar
+          </Button>
+          <Button
+            variant="contained"
+            disabled={executandoAcao !== null}
+            onClick={() => {
+              const pendente = acaoConfirmar
+              setAcaoConfirmar(null)
+              if (pendente) void executarAcao(pendente.action, pendente.row)
+            }}
+          >
+            Executar
           </Button>
         </DialogActions>
       </Dialog>

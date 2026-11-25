@@ -32,6 +32,7 @@ import FieldGridData, {
 import FieldGridText from "./fields/FieldGridText"
 import FieldGridMoney from "./fields/FieldGridMoney"
 import type { GeradorSistemaChildRoute } from "../gerador-screens"
+import { avaliarDisabledWhen } from "../utils/disabledWhen"
 import type { CustomAction, EntityRecord } from "../types"
 
 type JsonValue = string | number | boolean | null | object | undefined
@@ -516,15 +517,27 @@ export default function JsonGrid<T extends JsonRecord>({
                             const acaoKey = `${rowKey}_${action.id}`
                             const estado = acaoFeedback[acaoKey]
                             const executando = executandoAcao === acaoKey
+                            // disabledWhen (macro 3): template avaliada CONTRA a linha.
+                            // Sem linha fora da grid; expressão inválida falha aberta.
+                            const desabilitada = avaliarDisabledWhen(
+                              action.disabledWhen,
+                              row as EntityRecord,
+                            )
                             return (
                               <Stack key={action.id} spacing={0.5} alignItems="flex-end">
                                 <Button
                                   size="small"
                                   variant="outlined"
                                   color="secondary"
-                                  disabled={executando || !onRowAction}
+                                  disabled={executando || !onRowAction || desabilitada}
+                                  title={
+                                    desabilitada
+                                      ? `"${action.label}" indisponível para este registro`
+                                      : undefined
+                                  }
                                   onClick={(e) => {
                                     e.stopPropagation()
+                                    if (desabilitada) return
                                     onRowAction?.(action, row as EntityRecord)
                                   }}
                                 >
