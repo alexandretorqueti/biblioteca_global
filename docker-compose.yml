@@ -121,6 +121,8 @@ services:
       PSP_TIMEOUT_MS: ${PSP_TIMEOUT_MS:-10000}
       VENDAS_DOCUMENTOS_DIR: ${VENDAS_DOCUMENTOS_DIR:-/data/vendas-documentos}
       VENDAS_DOCUMENTOS_MAX_BYTES: ${VENDAS_DOCUMENTOS_MAX_BYTES:-10485760}
+      ANEXOS_DIR: ${ANEXOS_DIR:-/data/gestao-tarefas-anexos}
+      ANEXOS_MAX_BYTES: ${ANEXOS_MAX_BYTES:-10485760}
     depends_on:
       mysql:
         condition: service_healthy
@@ -129,6 +131,8 @@ services:
       - "${MOTOR_HOST_PORT:-3010}:3010"
     volumes:
       - ${VENDAS_DOCUMENTOS_HOST_DIR:-./data/vendas-documentos}:/data/vendas-documentos:rw
+      # Anexos de tarefas (gestao-de-tarefas-global): chave lógica por org/tarefa.
+      - ${ANEXOS_HOST_DIR:-./data/gestao-tarefas-anexos}:/data/gestao-tarefas-anexos:rw
       # Caminhos fixos dentro do container: o banco guarda paths do namespace
       # do OpenClaw, que precisam existir também no slot blue/green.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte/biblioteca-global}:/data/workspace/projects/codigofonte/biblioteca-global:rw
