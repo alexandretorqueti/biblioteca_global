@@ -61,6 +61,17 @@ import { GestaoGlobalTasksRepository, GESTAO_GLOBAL_TASKS_REPOSITORY } from "./g
       useValue: [new GestaoTarefasGlobalEscopo()],
     },
   ],
-  exports: [CrudService, PROJECT_DB_FACTORY, SCHEMA_REGISTRY, GestaoGlobalTasksRepository],
+  exports: [
+    CrudService,
+    PROJECT_DB_FACTORY,
+    SCHEMA_REGISTRY,
+    GestaoGlobalTasksRepository,
+    // Tenancy (macro #2) exposto para módulos custom do mesmo projeto —
+    // ex.: EscopoFluxoPorSlugGuard (fluxo da tarefa) delega ao
+    // EscopoOrganizacaoGuard. REPOSITORIO_TENANCY acompanha por clareza
+    // (o guard já o injeta dentro deste módulo).
+    EscopoOrganizacaoGuard,
+    REPOSITORIO_TENANCY,
+  ],
 })
 export class CrudModule {}

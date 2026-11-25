@@ -6,6 +6,9 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // telas custom (screens/) importam useApi da apps/web, que usa import.meta
+    // (vite) — mesmos types da apps/web para o typecheck do projeto resolver.
+    "types": ["vite/client"],
     // Guards Nest (src/tenancy) usam @Injectable/@Inject — mesmo padrão de apps/api.
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,

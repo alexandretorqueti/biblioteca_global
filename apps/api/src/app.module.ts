@@ -28,6 +28,7 @@ import { TenantsModule } from "./modules/tenants/tenants.module"
 import { ForjadorModule } from "./modules/forjador/forjador.module"
 import { PainelTenantModule } from "./modules/painel-tenant/painel-tenant.module"
 import { CanaisWhatsappModule } from "./modules/canais-whatsapp/canais-whatsapp.module"
+import { GestaoTarefasGlobalFluxoModule } from "./modules/gestao-tarefas-global-fluxo/gestao-tarefas-global-fluxo.module"
 
 @Module({
   imports: [
@@ -60,6 +61,9 @@ import { CanaisWhatsappModule } from "./modules/canais-whatsapp/canais-whatsapp.
     ForjadorModule,
     PainelTenantModule,
     CanaisWhatsappModule,
+    // Fluxo custom da tarefa (gestao-de-tarefas-global): rotas
+    // :slug/tarefas/:id/... mais específicas que o CRUD — casadas antes.
+    GestaoTarefasGlobalFluxoModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,
