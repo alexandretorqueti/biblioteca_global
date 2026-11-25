@@ -93,7 +93,7 @@ export class RealtimeClient {
       cancelarSubscribeRetry()
       this.subscribeRetryAttempts = 0
       const channel = this.options.channel ?? "task"
-      const subscribe = channel === "project-feed" || channel === "map"
+      const subscribe = channel === "project-feed" || channel === "map" || channel === "notifications"
         ? { type: "subscribe" as const, channel, lastSequence: this.lastSequence }
         : channel === "helpdesk"
           ? { type: "subscribe" as const, channel, sessaoId: this.options.sessaoId, lastSequence: this.lastSequence }
@@ -128,7 +128,8 @@ export class RealtimeClient {
             result.data.type === "subscribed" ||
             result.data.type === "feed_subscribed" ||
             result.data.type === "map_subscribed" ||
-            result.data.type === "helpdesk_subscribed"
+            result.data.type === "helpdesk_subscribed" ||
+            result.data.type === "notifications_subscribed"
           ) {
             // Inscrição confirmada: encerra qualquer retry pendente.
             cancelarSubscribeRetry()
