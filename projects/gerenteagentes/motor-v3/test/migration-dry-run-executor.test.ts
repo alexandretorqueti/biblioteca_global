@@ -641,7 +641,7 @@ describe('MigrationDryRunExecutor', () => {
       ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     ].join('\n')
 
-    it('remove FOREIGN KEYs nomeadas do clone scratch (errno 1826 no clone real)', async () => {
+    it('preserva FOREIGN KEYs no clone scratch com alias único (errno 1826 sem falso 1091)', async () => {
       const ws = await createWorkspace()
       await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
       await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
@@ -662,10 +662,76 @@ describe('MigrationDryRunExecutor', () => {
 
       const createCall = querySpy.mock.calls[1]![0] as string
       expect(createCall).toContain('CREATE TABLE `gate_scratch_989_task_runtime_facts`')
-      expect(createCall).not.toMatch(/FOREIGN\s+KEY/i)
-      expect(createCall).not.toMatch(/CONSTRAINT/i)
+      // A FK é PRESERVADA no clone, mas com alias por schema — o nome real
+      // reaparecendo no CREATE seria errno 1826 (incidente task-p2-989).
+      expect(createCall).toMatch(/CONSTRAINT `fk_g989_[0-9a-f]{10}` FOREIGN KEY \(`tarefa_id`\)/)
+      expect(createCall).not.toContain('task_runtime_facts_tarefa_fk')
+      expect(createCall).toContain('REFERENCES `tarefas` (`id`) ON DELETE CASCADE')
+      expect(createCall).toContain('task_runtime_facts_terminal_idx') // índices permanecem
       // vírgula pendurada antes do fechamento não pode sobrar
       expect(createCall).not.toMatch(/,\s*\)\s*ENGINE/i)
+    })
+
+    it('reescreve DROP/ADD FOREIGN KEY da migration para o alias do clone (errno 1091)', async () => {
+      // Incidente macro-gestao-de-tarefas-global-4 / bloqueio 3545: a FK
+      // existia na tabela real mas havia sido removida do clone — o DROP
+      // FOREIGN KEY válido da migration 0002 reprovaria com errno 1091.
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      const fkName = 'tarefas_regra_recorrencia_id_regras_recorrencia_id_fk'
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0002_third_darkstar.sql'),
+        [
+          `ALTER TABLE \`tarefas\` DROP FOREIGN KEY \`${fkName}\`;`,
+          '--> statement-breakpoint',
+          `ALTER TABLE \`tarefas\` ADD CONSTRAINT \`${fkName}\` FOREIGN KEY (\`regra_recorrencia_id\`) REFERENCES \`regras_recorrencia\`(\`id\`) ON DELETE set null ON UPDATE no action;`,
+        ].join('\n'),
+      )
+
+      const tarefasCreate = [
+        'CREATE TABLE `tarefas` (',
+        '  `id` bigint NOT NULL AUTO_INCREMENT,',
+        '  `regra_recorrencia_id` bigint DEFAULT NULL,',
+        '  PRIMARY KEY (`id`),',
+        '  KEY `tarefas_regra_recorrencia_idx` (`regra_recorrencia_id`),',
+        `  CONSTRAINT \`${fkName}\` FOREIGN KEY (\`regra_recorrencia_id\`) REFERENCES \`regras_recorrencia\` (\`id\`) ON DELETE SET NULL`,
+        ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      ].join('\n')
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': tarefasCreate }]]) // SHOW tarefas
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch tarefas
+      querySpy.mockResolvedValueOnce([[] as RowDataPacket[]]) // SHOW regras_recorrencia (sem linhas)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // DROP FOREIGN KEY
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // ADD CONSTRAINT
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup regras
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup tarefas
+
+      const executor = new MigrationDryRunExecutor(mockPool, 3545)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls[1]![0] as string
+      const aliasMatch = /CONSTRAINT `([^`]+)` FOREIGN KEY/.exec(createCall)
+      expect(aliasMatch).not.toBeNull()
+      const alias = aliasMatch![1]!
+      expect(alias).toMatch(/^fk_g3545_[0-9a-f]{10}$/)
+
+      const dropCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('DROP FOREIGN KEY')
+      )![0] as string
+      expect(dropCall).toContain('ALTER TABLE `gate_scratch_3545_tarefas`')
+      expect(dropCall).toContain(`DROP FOREIGN KEY \`${alias}\``) // a FK renomeada existe na scratch
+      expect(dropCall).not.toContain(fkName) // nome real colidiria com a tabela real (1826)
+
+      const addCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('ADD CONSTRAINT')
+      )![0] as string
+      expect(addCall).toContain('ALTER TABLE `gate_scratch_3545_tarefas`')
+      expect(addCall).toContain(`ADD CONSTRAINT \`${alias}\``) // mesmo alias do drop
+      expect(addCall).toContain('REFERENCES `gate_scratch_3545_regras_recorrencia`')
+      expect(addCall).toContain('ON DELETE set null')
     })
 
     it('propaga falha de clone que não seja tabela ausente, em vez de silenciar', async () => {

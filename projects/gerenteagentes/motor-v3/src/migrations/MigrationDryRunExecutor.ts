@@ -78,6 +78,19 @@ export class MigrationDryRunError extends Error {
 export class MigrationDryRunExecutor {
   private readonly scratchPrefix: string
   private readonly scratchTables: string[] = []
+  /**
+   * Mapeia nome real de FOREIGN KEY → nome usado na tabela scratch.
+   * Nomes de FK são únicos por SCHEMA no MySQL: o clone manteria a FK com o
+   * nome original e falharia com errno 1826 (incidente task-p2-989). A
+   * remoção pura do clone (correção de 989) criou o falso positivo oposto:
+   * `ALTER TABLE x DROP FOREIGN KEY fk` de uma migration válida reprova com
+   * errno 1091 porque a FK não existe na scratch, embora exista na tabela
+   * real (incidente macro-gestao-de-tarefas-global-4 / bloqueio 3545,
+   * migration 0002_third_darkstar.sql). Solução: o clone PRESERVA a FK com
+   * nome renomeado e os statements da migration têm o nome reescrito para o
+   * mesmo alias — o encadeamento drop/add passa a ser validado de verdade.
+   */
+  private readonly scratchFkNames = new Map<string, string>()
   /** Pool em uso na iteração corrente (por projeto); padrão = pool do construtor. */
   private activePool: Pool
 
@@ -146,11 +159,13 @@ export class MigrationDryRunExecutor {
           // completa (as migrations anteriores criarão as tabelas em scratch).
           await this.cleanupScratchTables()
           this.scratchTables.length = 0
+          this.scratchFkNames.clear()
           await this.executeFullChain(workspacePath, project, pendingMigrations)
         }
       } finally {
         await this.cleanupScratchTables()
         this.scratchTables.length = 0
+        this.scratchFkNames.clear()
         this.activePool = this.pool
         if (resolved?.owned) await resolved.pool.end().catch(() => undefined)
       }
@@ -172,7 +187,9 @@ export class MigrationDryRunExecutor {
 
       for (let statementIndex = 0; statementIndex < statements.length; statementIndex++) {
         const statement = statements[statementIndex]!
-        const rewritten = this.rewriteTableReferences(statement, touchedTables)
+        const rewritten = this.rewriteForeignKeyNames(
+          this.rewriteTableReferences(statement, touchedTables),
+        )
         const statementLine = this.findStatementLine(content, statement)
 
         try {
@@ -190,6 +207,36 @@ export class MigrationDryRunExecutor {
         }
       }
     }
+  }
+
+  /**
+   * Alias determinístico e curto para FK na scratch (`fk_g<jobId>_<hash>`):
+   * o nome original pode ter até 64 caracteres e colidiria com a FK da tabela
+   * real no mesmo schema (errno 1826). O hash mantém o mapeamento estável
+   * entre o clone e a reescrita dos statements.
+   */
+  private scratchFkName(realName: string): string {
+    const existing = this.scratchFkNames.get(realName)
+    if (existing) return existing
+    const digest = createHash('sha1').update(realName, 'utf8').digest('hex').slice(0, 10)
+    const alias = `fk_g${this.jobId}_${digest}`
+    this.scratchFkNames.set(realName, alias)
+    return alias
+  }
+
+  /**
+   * Reescreve nomes de FOREIGN KEY do statement para os aliases da scratch
+   * (registrados durante o clone). Só substitui ocorrências entre backticks —
+   * exatamente a forma como drizzle-kit e SHOW CREATE TABLE emitem o nome.
+   */
+  private rewriteForeignKeyNames(statement: string): string {
+    if (this.scratchFkNames.size === 0) return statement
+    let rewritten = statement
+    for (const [realName, alias] of this.scratchFkNames) {
+      const escaped = realName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      rewritten = rewritten.replace(new RegExp(`\`${escaped}\``, 'g'), `\`${alias}\``)
+    }
+    return rewritten
   }
 
   /**
@@ -558,10 +605,15 @@ export class MigrationDryRunExecutor {
    * por schema, então o clone falhava com errno 1826 e o `catch {}` engolia o
    * erro. O statement seguinte falhava com 1146 (scratch inexistente), um
    * sintoma enganoso que reprovava qualquer migration sobre tabela com FK.
-   * Agora: FKs são removidas do clone (integridade referencial é irrelevante
-   * para o dry-run de sintaxe) e falhas de clone não são mais silenciosas —
-   * apenas "tabela não existe" (1146/1051) e "clone já criado nesta execução"
-   * (1050, migrations do mesmo dry-run tocando a mesma tabela) são tolerados.
+   * Agora (incidente bloqueio 3545): FKs são PRESERVADAS no clone com alias
+   * único por schema (`fk_g<jobId>_<hash>`), registradas em `scratchFkNames`
+   * para que os statements da migration sejam reescritos com o mesmo alias —
+   * `DROP FOREIGN KEY`/`ADD CONSTRAINT` válidos passam no dry-run em vez de
+   * reprovar com errno 1091. FKs sem nome (`CONSTRAINT` ausente do SHOW
+   * CREATE, raro) continuam removidas: não há como mapeá-las. Falhas de
+   * clone não são mais silenciosas — apenas "tabela não existe" (1146/1051)
+   * e "clone já criado nesta execução" (1050, migrations do mesmo dry-run
+   * tocando a mesma tabela) são tolerados.
    */
   private async cloneTableStructures(tables: Set<string>): Promise<void> {
     for (const tableName of tables) {
@@ -607,19 +659,25 @@ export class MigrationDryRunExecutor {
   }
 
   /**
-   * Reescreve o SHOW CREATE TABLE para o nome scratch, removendo FOREIGN KEYs
-   * nomeadas (duplicariam o nome da constraint no schema) e normalizando o
-   * AUTO_INCREMENT. O formato do SHOW CREATE TABLE coloca cada constraint em
-   * uma linha própria, então a remoção é linha a linha + ajuste da vírgula
-   * pendurada antes do fechamento.
+   * Reescreve o SHOW CREATE TABLE para o nome scratch, RENOMEANDO as FOREIGN
+   * KEYs para aliases únicos por schema e normalizando o AUTO_INCREMENT. O
+   * formato do SHOW CREATE TABLE coloca cada constraint em uma linha própria,
+   * então a reescrita é linha a linha + ajuste da vírgula pendurada quando
+   * alguma linha é removida (FK sem CONSTRAINT nomeada).
    */
   private buildScratchCreateStatement(createStatement: string, tableName: string, scratchName: string): string {
-    const withoutForeignKeys = createStatement
+    const keptLines = createStatement
       .split('\n')
-      .filter(line => !/^\s*(?:CONSTRAINT\s+`[^`]*`\s+)?FOREIGN\s+KEY\b/i.test(line))
+      .map(line => {
+        if (!/^\s*(?:CONSTRAINT\s+`[^`]*`\s+)?FOREIGN\s+KEY\b/i.test(line)) return line
+        const named = /CONSTRAINT\s+`([^`]+)`\s+FOREIGN\s+KEY\b/i.exec(line)
+        if (!named) return null
+        return line.replace(/CONSTRAINT\s+`[^`]+`/, `CONSTRAINT \`${this.scratchFkName(named[1]!)}\``)
+      })
+      .filter((line): line is string => line !== null)
       .join('\n')
       .replace(/,(\s*\))/g, '$1')
-    return withoutForeignKeys
+    return keptLines
       .replace(new RegExp(`CREATE TABLE \`${tableName}\``, 'i'), `CREATE TABLE \`${scratchName}\``)
       .replace(/AUTO_INCREMENT=\d+/gi, 'AUTO_INCREMENT=1')
   }
