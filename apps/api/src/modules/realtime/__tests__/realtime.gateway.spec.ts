@@ -383,6 +383,123 @@ describe("RealtimeGateway — formato de inscrição WsAdapter", () => {
       expect(client.sent).toHaveLength(1)
     })
   })
+
+  describe("subscribe — canal notifications", () => {
+    function setSession(ws: MockClient, usuarioId: number): void {
+      ;(gateway as unknown as { sessoes: WeakMap<WebSocket, { projetoId: number; usuarioId: number }> })
+        .sessoes.set(ws as unknown as WebSocket, { projetoId: projectId, usuarioId })
+    }
+
+    it("inscreve no escopo do usuarioId autenticado e responde notifications_subscribed", async () => {
+      setSession(client, 11)
+      await gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+
+      expect(JSON.parse(client.sent[0]!)).toEqual({ type: "notifications_subscribed", currentSequence: 0 })
+    })
+
+    it("entrega notification.created publicado para o usuarioId do socket inscrito", async () => {
+      setSession(client, 11)
+      await gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+      client.sent.length = 0
+
+      service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notification.created", payload: { notification: { id: 10, titulo: "Lembrete de prazo" } } })
+
+      expect(client.sent).toHaveLength(1)
+      const message = JSON.parse(client.sent[0]!)
+      expect(message.type).toBe("notification.created")
+      expect(message.notification).toEqual({ id: 10, titulo: "Lembrete de prazo" })
+      expect(message.sequence).toBe(1)
+    })
+
+    it("dois usuários conectados: publicação do usuário A não chega ao usuário B", async () => {
+      const userA = mockClient()
+      const userB = mockClient()
+      setSession(userA, 11)
+      setSession(userB, 12)
+      await gateway.subscribe(userA as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+      await gateway.subscribe(userB as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+      userA.sent.length = 0
+      userB.sent.length = 0
+
+      service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notifications.unread.changed", payload: { unreadCount: 2 } })
+
+      expect(JSON.parse(userA.sent[0]!)).toMatchObject({ type: "notifications.unread.changed", unreadCount: 2 })
+      expect(userB.sent).toHaveLength(0)
+
+      service.publicarNotificacoes({ projectId, usuarioId: 12, type: "notification.created", payload: { notification: { id: 11 } } })
+      expect(userA.sent).toHaveLength(1) // A continua sem receber o evento de B
+      expect(JSON.parse(userB.sent[0]!).type).toBe("notification.created")
+    })
+
+    it("body do subscribe NUNCA escolhe o usuário: usuarioId no payload não vaza para outros escopos", async () => {
+      const userA = mockClient()
+      const userB = mockClient()
+      setSession(userA, 11)
+      setSession(userB, 12)
+      // Tentativa de "escolher usuário" no corpo da mensagem — o gateway ignora
+      // qualquer coisa que não seja o contrato zod (o contrato não tem campo de
+      // usuário no canal notifications).
+      await gateway.subscribe(userA as unknown as WebSocket, { type: "subscribe", channel: "notifications", usuarioId: 12 })
+      await gateway.subscribe(userB as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+      userA.sent.length = 0
+      userB.sent.length = 0
+
+      service.publicarNotificacoes({ projectId, usuarioId: 12, type: "notification.created", payload: { notification: { id: 12 } } })
+
+      expect(JSON.parse(userB.sent[0]!).type).toBe("notification.created")
+      expect(userA.sent).toHaveLength(0) // A assinou no escopo 11, mesmo tentando 12
+    })
+
+    it("socket sem sessão autenticada recebe erro sem crash", async () => {
+      const anon = mockClient()
+      await gateway.subscribe(anon as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+
+      expect(anon.sent).toHaveLength(1)
+      expect(JSON.parse(anon.sent[0]!)).toMatchObject({ type: "error", code: "INVALID_SUBSCRIPTION" })
+      // Publicação posterior não chega ao socket não autenticado.
+      service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notification.created", payload: { notification: { id: 13 } } })
+      expect(anon.sent).toHaveLength(1)
+    })
+
+    it("faz replay quando lastSequence é informado e sinaliza indisponível fora do buffer", async () => {
+      setSession(client, 11)
+      service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notification.created", payload: { notification: { id: 1 } } })
+      service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notifications.unread.changed", payload: { unreadCount: 1 } })
+
+      await gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "notifications", lastSequence: 1 })
+
+      const messages = client.sent.map((entry) => JSON.parse(entry))
+      expect(messages.find((entry) => entry.type === "notifications.unread.changed")?.sequence).toBe(2)
+      expect(messages.at(-1)).toEqual({ type: "notifications_subscribed", currentSequence: 2 })
+
+      // Cursor muito antigo (fora do buffer): replay indisponível.
+      const stale = mockClient()
+      setSession(stale, 11)
+      for (let i = 0; i < 502; i += 1) {
+        service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notification.created", payload: { notification: { id: 1000 + i } } })
+      }
+      await gateway.subscribe(stale as unknown as WebSocket, { type: "subscribe", channel: "notifications", lastSequence: 1 })
+      const staleMessages = stale.sent.map((entry) => JSON.parse(entry))
+      expect(staleMessages.find((entry) => entry.type === "notifications_replay_unavailable")).toBeDefined()
+      expect(staleMessages.at(-1)).toMatchObject({ type: "notifications_subscribed" })
+    })
+
+    it("desconexão limpa o registro do canal (sem leak de sockets)", async () => {
+      setSession(client, 11)
+      await gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "notifications" })
+      client.sent.length = 0
+
+      gateway.handleDisconnect(client as unknown as WebSocket)
+
+      service.publicarNotificacoes({ projectId, usuarioId: 11, type: "notification.created", payload: { notification: { id: 14 } } })
+      expect(client.sent).toHaveLength(0)
+
+      // O registro interno foi removido (sem entry vazia acumulando).
+      const inscritos = (service as unknown as { notificacaoInscritos: Map<string, Map<unknown, number>> }).notificacaoInscritos
+      const entry = inscritos.get(`notifications:${projectId}:11`)
+      expect(entry ? entry.has(client) : false).toBe(false)
+    })
+  })
 })
 
 describe("RealtimeGateway — subscribe × handshake assíncrono (corrida de autenticação)", () => {

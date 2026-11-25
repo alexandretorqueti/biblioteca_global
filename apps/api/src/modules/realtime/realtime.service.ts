@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common"
 import { randomUUID } from "node:crypto"
 import type { WebSocket } from "ws"
-import { realtimeIngressEventSchema, type AgentMapSnapshot, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent, type TaskDetailSnapshot, type HelpDeskRealtimeSnapshot, type HelpDeskRealtimeMessage } from "@biblioteca-global/shared"
+import { realtimeIngressEventSchema, type AgentMapSnapshot, type NotificationRealtimeEvent, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent, type TaskDetailSnapshot, type HelpDeskRealtimeSnapshot, type HelpDeskRealtimeMessage } from "@biblioteca-global/shared"
 
 const LIMITE_EVENTOS_POR_TAREFA = 500
 const LIMITE_EVENTOS_HELPDESK = 500
@@ -22,6 +22,9 @@ export class RealtimeService {
   private readonly helpdeskSequencias = new Map<string, number>()
   private readonly helpdeskEventos = new Map<string, Array<{ eventId: string; sequence: number; occurredAt: string; type: "helpdesk.message.created" | "helpdesk.processing.changed"; payload: Record<string, unknown> }>>()
   private readonly helpdeskInscritos = new Map<string, Map<WebSocket, number>>()
+  private readonly notificacaoSequencias = new Map<string, number>()
+  private readonly notificacaoEventos = new Map<string, NotificationRealtimeEvent[]>()
+  private readonly notificacaoInscritos = new Map<string, Map<WebSocket, number>>()
 
   publicar(evento: unknown): TaskEventEnvelope {
     const parsed = realtimeIngressEventSchema.safeParse(evento)
@@ -91,6 +94,10 @@ export class RealtimeService {
     for (const [key, inscritos] of this.helpdeskInscritos) {
       inscritos.delete(client)
       if (inscritos.size === 0) this.helpdeskInscritos.delete(key)
+    }
+    for (const [key, inscritos] of this.notificacaoInscritos) {
+      inscritos.delete(client)
+      if (inscritos.size === 0) this.notificacaoInscritos.delete(key)
     }
   }
 
@@ -168,6 +175,58 @@ export class RealtimeService {
       const atual = this.sequencias.get(projectId) ?? 0
       this.enviarPara(client, { type: "task_snapshot", taskId: taskId, currentSequence: atual, snapshot })
     }
+  }
+
+  /**
+   * Canal "notifications": push por (projectId, usuarioId). O usuário é sempre
+   * o autenticado da sessão (claims.sub do JWT) — o corpo do subscribe nunca
+   * escolhe o usuário (precedente helpdesk/FORBIDDEN_SUBSCRIPTION).
+   */
+  inscreverNotificacoes(projectId: number, usuarioId: number, client: WebSocket, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
+    const key = this.notificacaoKey(projectId, usuarioId)
+    const inscritos = this.notificacaoInscritos.get(key) ?? new Map<WebSocket, number>()
+    inscritos.set(client, usuarioId)
+    this.notificacaoInscritos.set(key, inscritos)
+    const atual = this.notificacaoSequencias.get(key) ?? 0
+    const lista = this.notificacaoEventos.get(key) ?? []
+    if (lastSequence !== undefined) {
+      const primeiro = lista[0]?.sequence
+      if (primeiro !== undefined && lastSequence < primeiro - 1) return { currentSequence: atual, replayAvailable: false }
+      for (const event of lista) if (event.sequence > lastSequence) this.enviarPara(client, event)
+    }
+    return { currentSequence: atual, replayAvailable: true }
+  }
+
+  /** Publica SOMENTE para os sockets do (projectId, usuarioId) informado. */
+  publicarNotificacoes(input: {
+    projectId: number
+    usuarioId: number
+    type: "notification.created"
+    payload: { notification: Record<string, unknown> }
+  } | {
+    projectId: number
+    usuarioId: number
+    type: "notifications.unread.changed"
+    payload: { unreadCount: number }
+  }): void {
+    const key = this.notificacaoKey(input.projectId, input.usuarioId)
+    const sequence = (this.notificacaoSequencias.get(key) ?? 0) + 1
+    const occurredAt = new Date().toISOString()
+    const event: NotificationRealtimeEvent = input.type === "notification.created"
+      ? { type: "notification.created", eventId: randomUUID(), sequence, occurredAt, notification: input.payload.notification }
+      : { type: "notifications.unread.changed", eventId: randomUUID(), sequence, occurredAt, unreadCount: input.payload.unreadCount }
+    this.notificacaoSequencias.set(key, sequence)
+    const lista = this.notificacaoEventos.get(key) ?? []
+    lista.push(event)
+    if (lista.length > LIMITE_EVENTOS_HELPDESK) lista.splice(0, lista.length - LIMITE_EVENTOS_HELPDESK)
+    this.notificacaoEventos.set(key, lista)
+    for (const client of this.notificacaoInscritos.get(key)?.keys() ?? []) {
+      this.enviarPara(client, event)
+    }
+  }
+
+  private notificacaoKey(projectId: number, usuarioId: number): string {
+    return `notifications:${projectId}:${usuarioId}`
   }
 
   private chave(projectId: number, taskId: number): string {

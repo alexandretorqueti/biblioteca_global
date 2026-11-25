@@ -26,6 +26,7 @@ import { HelpDeskWidget } from "@biblioteca-global/ui"
 import { createHelpDeskClient } from "@biblioteca-global/api-client"
 import { resolveApiBaseUrl, resolveRealtimeUrl } from "../api/client"
 import { useAuth } from "../auth/AuthContext"
+import { NotificacoesSino } from "../project/NotificacoesSino"
 import { useProject } from "../project/ProjectContext"
 import { useThemeSetting } from "../theme/ThemeContext"
 
@@ -57,6 +58,16 @@ export default function SystemScreen(): ReactNode {
       <Stack direction="row" spacing={1} alignItems="center">
         {projetoTroca}
 
+        {/* Sino de notificações: exclusivo do projeto de gestão de tarefas
+            (macro #5) — outros projetos permanecem visualmente inalterados. */}
+        {projeto?.slug === "gestao-de-tarefas-global" && bundle && (
+          <NotificacoesSino
+            slug={projeto.slug}
+            http={bundle.http}
+            getAccessToken={bundle.getAccessToken}
+          />
+        )}
+
         <Tooltip title={themeName === "claro" ? "Modo escuro" : "Modo claro"}>
           <IconButton
             onClick={toggle}
@@ -84,7 +95,7 @@ export default function SystemScreen(): ReactNode {
         </Typography>
       </Stack>
     ),
-    [toggle, themeName, logout, projeto, projetoTroca],
+    [toggle, themeName, logout, projeto, projetoTroca, bundle],
   )
 
   // HelpDesk: driver injetado quando há autenticação + projeto.

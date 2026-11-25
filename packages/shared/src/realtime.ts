@@ -135,10 +135,34 @@ export const taskEventEnvelopeSchema = taskEventEnvelopeBaseSchema.extend({
 })
 export type TaskEventEnvelope = z.infer<typeof taskEventEnvelopeSchema>
 
+/**
+ * Eventos servidor→cliente do canal "notifications" (push por usuário).
+ * O escopo do evento é o (projectId, usuarioId) autenticado do handshake;
+ * o body do subscribe NUNCA escolhe o usuário.
+ */
+export const notificationRealtimeEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("notification.created"),
+    eventId: z.string().min(1),
+    sequence: z.number().int().positive(),
+    occurredAt: z.string().datetime(),
+    notification: z.record(z.string(), z.unknown()),
+  }),
+  z.object({
+    type: z.literal("notifications.unread.changed"),
+    eventId: z.string().min(1),
+    sequence: z.number().int().positive(),
+    occurredAt: z.string().datetime(),
+    unreadCount: z.number().int().nonnegative(),
+  }),
+])
+export type NotificationRealtimeEvent = z.infer<typeof notificationRealtimeEventSchema>
+
 export const realtimeClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("subscribe"),
-    channel: z.union([z.literal("task"), z.literal("project-feed"), z.literal("map"), z.literal("helpdesk")]),
+    // O canal "notifications" não aceita id de input: o escopo é o usuarioId da sessão.
+    channel: z.union([z.literal("task"), z.literal("project-feed"), z.literal("map"), z.literal("helpdesk"), z.literal("notifications")]),
     taskId: z.number().int().positive().optional(),
     sessaoId: z.number().int().positive().optional(),
     lastSequence: z.number().int().nonnegative().optional(),
@@ -163,6 +187,9 @@ export const realtimeServerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("replay_unavailable"), taskId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("feed_replay_unavailable"), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("map_replay_unavailable"), projectId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
+  z.object({ type: z.literal("notifications_subscribed"), currentSequence: z.number().int().nonnegative() }),
+  z.object({ type: z.literal("notifications_replay_unavailable"), currentSequence: z.number().int().nonnegative() }),
+  ...notificationRealtimeEventSchema.options,
   z.object({ type: z.literal("pong") }),
   z.object({ type: z.literal("error"), code: z.string(), message: z.string() }),
 ])

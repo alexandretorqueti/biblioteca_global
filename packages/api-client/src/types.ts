@@ -42,7 +42,7 @@ export interface RealtimeClientOptions {
   /** URL base da API para solicitar ticket (ex.: https://biblioteca-api.webconnect.com.br/api). */
   baseUrl: string
   /** Canal de inscrição após abrir a conexão. Padrão: "task" (canal por tarefa). */
-  channel?: "task" | "project-feed" | "map" | "helpdesk"
+  channel?: "task" | "project-feed" | "map" | "helpdesk" | "notifications"
   /** Obrigatório no canal "task"; ignorado nos canais "project-feed" e "map". */
   taskId?: number
   /** Obrigatório no canal helpdesk; a autorização real vem do JWT. */

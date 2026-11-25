@@ -30,6 +30,7 @@ import { PainelTenantModule } from "./modules/painel-tenant/painel-tenant.module
 import { CanaisWhatsappModule } from "./modules/canais-whatsapp/canais-whatsapp.module"
 import { GestaoTarefasGlobalFluxoModule } from "./modules/gestao-tarefas-global-fluxo/gestao-tarefas-global-fluxo.module"
 import { GestaoTarefasGlobalRecorrenciaModule } from "./modules/gestao-tarefas-global-recorrencia/gestao-tarefas-global-recorrencia.module"
+import { GestaoTarefasGlobalNotificacoesModule } from "./modules/gestao-tarefas-global-notificacoes/gestao-tarefas-global-notificacoes.module"
 
 @Module({
   imports: [
@@ -68,6 +69,9 @@ import { GestaoTarefasGlobalRecorrenciaModule } from "./modules/gestao-tarefas-g
     // Agendador do motor de recorrência (gestao-de-tarefas-global): sem rotas,
     // apenas o timer de geração (macro 4, subtarefa 3).
     GestaoTarefasGlobalRecorrenciaModule,
+    // Agendador do motor de lembretes (gestao-de-tarefas-global): sem rotas,
+    // apenas o timer de disparo (macro 5, subtarefa 1).
+    GestaoTarefasGlobalNotificacoesModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,

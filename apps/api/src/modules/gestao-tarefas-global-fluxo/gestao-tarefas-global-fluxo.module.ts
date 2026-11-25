@@ -17,6 +17,9 @@
  *   projeto projeto_<id>;
  * - RealtimeService: exportada pelo RealtimeModule (task.status.changed /
  *   chat.message.created — tipos já existentes em packages/shared);
+ * - GestaoTarefasGlobalNotificacoesModule: NotificacoesService (macro #5,
+ *   subtarefa 2) — notificações de delegação/devolução criadas na MESMA
+ *   transação da transição e push `notification.created` pós-commit;
  * - EscopoOrganizacaoGuard + REPOSITORIO_TENANCY: providos pelo CrudModule
  *   (@Global) — tenancy intra-projeto (macro #2).
  */
@@ -24,11 +27,12 @@ import { Module } from "@nestjs/common"
 import { AuthModule } from "../auth/auth.module"
 import { CrudModule } from "../crud/crud.module"
 import { RealtimeModule } from "../realtime/realtime.module"
+import { GestaoTarefasGlobalNotificacoesModule } from "../gestao-tarefas-global-notificacoes/gestao-tarefas-global-notificacoes.module"
 import { FluxoTarefasGlobalController } from "./fluxo-tarefas-global.controller"
 import { FluxoTarefasGlobalService } from "./fluxo-tarefas-global.service"
 
 @Module({
-  imports: [AuthModule, CrudModule, RealtimeModule],
+  imports: [AuthModule, CrudModule, RealtimeModule, GestaoTarefasGlobalNotificacoesModule],
   controllers: [FluxoTarefasGlobalController],
   providers: [FluxoTarefasGlobalService],
   exports: [FluxoTarefasGlobalService],

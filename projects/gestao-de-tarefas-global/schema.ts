@@ -214,7 +214,12 @@ export const tarefas = mysqlTable("tarefas", {
   concluidaEm: datetime("concluida_em", { mode: "string" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
+},
+(table) => [
+  // Varredura do agendador do motor de lembretes (macro 5, subtarefa 1):
+  // busca tarefas com prazo no futuro + antecedência configurada.
+  index("tarefas_prazo_lembrete_antecedencia_minutos").on(table.prazo, table.lembreteAntecedenciaMinutos),
+])
 
 // ============================================================================
 // TAREFA_TAGS (pivot sem tela; tags via multipleChoice multiple na tarefa)
@@ -336,7 +341,11 @@ export const notificacoes = mysqlTable("notificacoes", {
   ),
   lida: boolean("lida").notNull().default(false),
   criadoEm: timestamp("criado_em").notNull().defaultNow(),
-})
+},
+(table) => [
+  // Sino do usuário logado (macro 5): contagem de não lidas por usuário.
+  index("notificacoes_usuario_id_lida").on(table.usuarioId, table.lida),
+])
 
 // ============================================================================
 // ANNOTATIONS DE FORMULÁRIO (PoC §7.2 — consumidas por coletarAnnotations)

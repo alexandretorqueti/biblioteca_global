@@ -28,6 +28,11 @@
  *   A criação permanece aberta a qualquer perfil autenticado do escopo: default
  *   'aberta' vem do schema, `organizacao_id` é forçado pela sessão e
  *   `criado_por_id` ausente no body resolve para o colaborador da sessão.
+ * - Lembrete sempre "x antes do prazo" (decisão 2026-10-22): `prazo` NULL
+ *   proíbe `lembreteAntecedenciaMinutos` não-nulo → 400 claro. No create a
+ *   checagem entra em `validarEscrita`; no update a regra mesclada (campos
+ *   enviados + linha atual) entra no hook opcional `validarAtualizacao` —
+ *   limpar o lembrete com `null` no mesmo update que zera o prazo é válido.
  *
  * Registrada em crud.module no token CRUD_ESCOPO_EXTENSIONS — o CrudService
  * só a consulta quando o slug da sessão é `gestao-de-tarefas-global`; o
@@ -79,6 +84,12 @@ const COLUNA_STATUS = "status"
 
 /** Nome da coluna de criação do autor na tabela tarefas. */
 const COLUNA_CRIADO_POR = "criado_por_id"
+
+/** Prop Drizzle (nome de propriedade) da coluna de prazo na tabela tarefas. */
+const PROP_PRAZO = "prazo"
+
+/** Prop Drizzle da coluna de antecedência do lembrete na tabela tarefas. */
+const PROP_LEMBRETE = "lembreteAntecedenciaMinutos"
 
 /** Único status cuja edição genérica é permitida (REQ-F-019). */
 const STATUS_EDITAVEL = "aberta"
@@ -158,6 +169,27 @@ function validarRegraRecorrenciaEscrita(
   if (erros.length > 0) {
     throw new BadRequestException(
       `Regra de recorrência inválida: ${erros.join("; ")}`,
+    )
+  }
+}
+
+/**
+ * Regra de domínio do lembrete (decisão 2026-10-22): lembrete é sempre
+ * "x minutos antes do prazo" — `prazo` NULL proíbe `lembreteAntecedenciaMinutos`
+ * não-nulo. Avalia o estado FINAL do registro: na criação, os valores do
+ * body; na atualização, os campos enviados mesclados à linha atual (limpar o
+ * lembrete com `null` no mesmo update que zera o prazo é válido — o estado
+ * final fica sem lembrete).
+ */
+function validarLembreteSemPrazo(
+  prazoFinal: unknown,
+  lembreteFinal: unknown,
+): void {
+  const temLembrete = lembreteFinal !== null && lembreteFinal !== undefined
+  const semPrazo = prazoFinal === null || prazoFinal === undefined
+  if (semPrazo && temLembrete) {
+    throw new BadRequestException(
+      `O lembrete ("${PROP_LEMBRETE}") só é permitido quando a tarefa tem prazo: lembrete é sempre "x minutos antes do prazo". Informe um prazo ou remova o lembrete.`,
     )
   }
 }
@@ -272,6 +304,12 @@ export class GestaoTarefasGlobalEscopo implements ExtensaoEscopoCrud {
     if (ehTabelaRegrasRecorrencia(tabela)) {
       validarRegraRecorrenciaEscrita(valores)
     }
+    // Regra de domínio do lembrete na CRIAÇÃO (decisão 2026-10-22): tarefa
+    // sem prazo não aceita lembrete → 400 claro. No update a checagem
+    // mesclada (campos enviados + linha atual) roda em `validarAtualizacao`.
+    if (operacao === "create" && ehTabelaTarefas(tabela)) {
+      validarLembreteSemPrazo(valores[PROP_PRAZO], valores[PROP_LEMBRETE])
+    }
     for (const fk of getTableConfig(tabela).foreignKeys) {
       const { columns, foreignColumns, foreignTable } = fk.reference()
       const local = columns[0]
@@ -314,6 +352,31 @@ export class GestaoTarefasGlobalEscopo implements ExtensaoEscopoCrud {
         )
       }
     }
+  }
+
+  /**
+   * Validação de domínio do UPDATE com a linha atual em mãos (decisão
+   * 2026-10-22 — lembrete é sempre "x antes do prazo"): estado FINAL
+   * mesclado (campos enviados + linha atual) com `prazo` NULL e lembrete
+   * não-nulo → 400 claro. Cobre os dois sentidos: setar lembrete em tarefa
+   * sem prazo, e zerar o prazo mantendo o lembrete; limpar o lembrete com
+   * `null` no mesmo update que zera o prazo é válido. Só vale para a tabela
+   * tarefas deste projeto — demais tabelas/regras permanecem intocadas.
+   */
+  validarAtualizacao(
+    db: ProjetoDb,
+    tabela: MySqlTable,
+    campos: Record<string, unknown>,
+    linhaAtual: Record<string, unknown>,
+    ctx: ContextoEscopoCrud,
+  ): void {
+    void db
+    void ctx
+    if (!ehTabelaTarefas(tabela)) return
+    const prazoFinal = PROP_PRAZO in campos ? campos[PROP_PRAZO] : linhaAtual[PROP_PRAZO]
+    const lembreteFinal =
+      PROP_LEMBRETE in campos ? campos[PROP_LEMBRETE] : linhaAtual[PROP_LEMBRETE]
+    validarLembreteSemPrazo(prazoFinal, lembreteFinal)
   }
 
   operacaoBloqueada(
