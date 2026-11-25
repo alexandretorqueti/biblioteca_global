@@ -471,6 +471,195 @@ describe("CrudService — wiring da regra de status/criação (REQ-F-019, com db
   })
 })
 
+describe("GestaoTarefasGlobalEscopo — lembrete sem prazo (decisão 2026-10-22)", () => {
+  const { db } = dbFake()
+  const tarefa = tabelas.tarefas!
+  const LEMBRETE = "lembreteAntecedenciaMinutos"
+
+  it("create: lembrete não-nulo com prazo ausente → 400 com mensagem clara em pt-BR", async () => {
+    await expect(
+      extensao.validarEscrita(db, tarefa, { [LEMBRETE]: 60 }, ctx, "create"),
+    ).rejects.toThrow(/lembrete[\s\S]*prazo/)
+  })
+
+  it("create: lembrete não-nulo com prazo explícito NULL → 400", async () => {
+    await expect(
+      extensao.validarEscrita(db, tarefa, { prazo: null, [LEMBRETE]: 60 }, ctx, "create"),
+    ).rejects.toThrow(BadRequestException)
+  })
+
+  it("create: lembrete + prazo presentes → passa", async () => {
+    await expect(
+      extensao.validarEscrita(db, tarefa, { prazo: "2026-12-01 10:00:00", [LEMBRETE]: 60 }, ctx, "create"),
+    ).resolves.toBeUndefined()
+  })
+
+  it("create: sem lembrete e sem prazo → passa (default NULL)", async () => {
+    await expect(
+      extensao.validarEscrita(db, tarefa, {}, ctx, "create"),
+    ).resolves.toBeUndefined()
+  })
+
+  it("create: lembrete limpo (null) sem prazo → passa", async () => {
+    await expect(
+      extensao.validarEscrita(db, tarefa, { [LEMBRETE]: null }, ctx, "create"),
+    ).resolves.toBeUndefined()
+  })
+
+  it("update (hook): setar lembrete em tarefa sem prazo → 400", async () => {
+    expect(() =>
+      extensao.validarAtualizacao!(db, tarefa, { [LEMBRETE]: 60 }, { id: 1, prazo: null, [LEMBRETE]: null }, ctx),
+    ).toThrow(/lembrete[\s\S]*prazo/)
+  })
+
+  it("update (hook): zerar prazo mantendo lembrete → 400", async () => {
+    expect(() =>
+      extensao.validarAtualizacao!(db, tarefa, { prazo: null }, { id: 1, prazo: "2026-12-01 10:00:00", [LEMBRETE]: 60 }, ctx),
+    ).toThrow(BadRequestException)
+  })
+
+  it("update (hook): limpar lembrete junto ao zerar o prazo → permitido", async () => {
+    expect(() =>
+      extensao.validarAtualizacao!(db, tarefa, { prazo: null, [LEMBRETE]: null }, { id: 1, prazo: "2026-12-01 10:00:00", [LEMBRETE]: 60 }, ctx),
+    ).not.toThrow()
+  })
+
+  it("update (hook): adicionar prazo em tarefa com lembrete → permitido", async () => {
+    expect(() =>
+      extensao.validarAtualizacao!(db, tarefa, { prazo: "2026-12-01 10:00:00" }, { id: 1, prazo: null, [LEMBRETE]: 60 }, ctx),
+    ).not.toThrow()
+  })
+
+  it("update (hook): campos neutros não violam a regra (estado final inalterado)", async () => {
+    expect(() =>
+      extensao.validarAtualizacao!(db, tarefa, { titulo: "x" }, { id: 1, prazo: "2026-12-01 10:00:00", [LEMBRETE]: 60 }, ctx),
+    ).not.toThrow()
+    expect(() =>
+      extensao.validarAtualizacao!(db, tarefa, { titulo: "x" }, { id: 1, prazo: null, [LEMBRETE]: null }, ctx),
+    ).not.toThrow()
+  })
+
+  it("update (hook): tabela fora de tarefas → regra nunca se aplica", async () => {
+    expect(() =>
+      extensao.validarAtualizacao!(db, tabelas.areas!, { [LEMBRETE]: 60 }, { id: 1, prazo: null }, ctx),
+    ).not.toThrow()
+  })
+
+  it("validarEscrita no update NÃO revalida a regra (evita falso positivo com campos parciais)", async () => {
+    // Campos parciais do update não carregam a linha atual no hook de
+    // criação — a regra mesclada mora em validarAtualizacao.
+    await expect(
+      extensao.validarEscrita(db, tarefa, { [LEMBRETE]: 60 }, ctx, "update"),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe("CrudService — wiring da regra lembrete×prazo (com db fake)", () => {
+  const contexto = {
+    tipo: "colaborador",
+    organizacaoId: 10,
+    colaboradorId: 7,
+    perfil: "admin",
+  }
+
+  function montarComDb(linhaTarefa: Record<string, unknown>) {
+    const atualizacoes: Array<Record<string, unknown>> = []
+    const inseridos: Array<Record<string, unknown>> = []
+    const db = {
+      select: () => ({
+        from: (tabela: MySqlTable) => ({
+          where: () => {
+            const linhas = nomeTabela(tabela) === "tarefas" ? [linhaTarefa] : [{ id: 1 }]
+            return Object.assign(Promise.resolve(linhas), { limit: async () => linhas })
+          },
+        }),
+      }),
+      update: () => ({
+        set: (campos: Record<string, unknown>) => {
+          atualizacoes.push(campos)
+          Object.assign(linhaTarefa, campos)
+          return { where: async () => [{ affectedRows: 1 }] }
+        },
+      }),
+      insert: () => ({
+        values: async (valores: Record<string, unknown>) => {
+          inseridos.push(valores)
+          Object.assign(linhaTarefa, valores)
+          return [{ insertId: 123 }]
+        },
+      }),
+    }
+    const registry: SchemaRegistry = {
+      tabelasDoProjeto: (slug: string) =>
+        slug === SLUG_GESTAO_TAREFAS_GLOBAL ? tabelas : undefined,
+      projetosCarregados: () => [SLUG_GESTAO_TAREFAS_GLOBAL],
+    }
+    const factory = { obter: async () => db } as unknown as ProjectDbFactory
+    const configService = { get: () => undefined } as unknown as ConfigService
+    const service = new CrudService(registry, factory, configService, new RealtimeService(), [extensao])
+    return { service, atualizacoes, inseridos }
+  }
+
+  function projetoGestao() {
+    return { id: 8496, nome: "Gestão", slug: SLUG_GESTAO_TAREFAS_GLOBAL, perfil: "admin" } as const
+  }
+
+  it("POST criar tarefa com lembreteAntecedenciaMinutos e prazo ausente → 400, sem gravar", async () => {
+    const { service, inseridos } = montarComDb({ id: 1, status: "aberta", titulo: "T" })
+    await expect(
+      service.criar(
+        projetoGestao(),
+        "tarefas",
+        { titulo: "T", area_id: 5, responsavel_id: 9, lembreteAntecedenciaMinutos: 60 },
+        contexto,
+      ),
+    ).rejects.toThrow(BadRequestException)
+    expect(inseridos).toHaveLength(0)
+  })
+
+  it("POST criar tarefa com lembrete e prazo presente → grava", async () => {
+    const { service, inseridos } = montarComDb({ id: 1, status: "aberta", titulo: "T" })
+    await service.criar(
+      projetoGestao(),
+      "tarefas",
+      { titulo: "T", area_id: 5, responsavel_id: 9, prazo: "2026-12-01 10:00:00", lembreteAntecedenciaMinutos: 60 },
+      contexto,
+    )
+    expect(inseridos).toHaveLength(1)
+    expect(inseridos[0]).toMatchObject({ lembreteAntecedenciaMinutos: 60, prazo: "2026-12-01 10:00:00" })
+  })
+
+  it("PATCH em tarefa sem prazo adicionando lembrete → 400, sem gravar", async () => {
+    const { service, atualizacoes } = montarComDb({ id: 2, status: "aberta", titulo: "T", prazo: null, lembreteAntecedenciaMinutos: null })
+    await expect(
+      service.atualizar(projetoGestao(), "tarefas", 2, { lembreteAntecedenciaMinutos: 60 }, contexto),
+    ).rejects.toThrow(BadRequestException)
+    expect(atualizacoes).toHaveLength(0)
+  })
+
+  it("PATCH zerando prazo (null) mantendo lembrete no registro → 400, sem gravar", async () => {
+    const { service, atualizacoes } = montarComDb({ id: 3, status: "aberta", titulo: "T", prazo: "2026-12-01 10:00:00", lembreteAntecedenciaMinutos: 60 })
+    await expect(
+      service.atualizar(projetoGestao(), "tarefas", 3, { prazo: null }, contexto),
+    ).rejects.toThrow(BadRequestException)
+    expect(atualizacoes).toHaveLength(0)
+  })
+
+  it("PATCH zerando prazo limpando o lembrete junto → permitido e grava", async () => {
+    const { service, atualizacoes } = montarComDb({ id: 4, status: "aberta", titulo: "T", prazo: "2026-12-01 10:00:00", lembreteAntecedenciaMinutos: 60 })
+    await service.atualizar(projetoGestao(), "tarefas", 4, { prazo: null, lembreteAntecedenciaMinutos: null }, contexto)
+    expect(atualizacoes).toHaveLength(1)
+    expect(atualizacoes[0]).toMatchObject({ prazo: null, lembreteAntecedenciaMinutos: null })
+  })
+
+  it("PATCH adicionando prazo em tarefa com lembrete → permitido", async () => {
+    const { service, atualizacoes } = montarComDb({ id: 5, status: "aberta", titulo: "T", prazo: null, lembreteAntecedenciaMinutos: 60 })
+    await service.atualizar(projetoGestao(), "tarefas", 5, { prazo: "2026-12-01 10:00:00" }, contexto)
+    expect(atualizacoes).toHaveLength(1)
+    expect(atualizacoes[0]).toMatchObject({ prazo: "2026-12-01 10:00:00" })
+  })
+})
+
 describe("GestaoTarefasGlobalEscopo — campos sensíveis por perfil (REQ-F-017)", () => {
   function ctxPerfil(perfil: string): ContextoEscopoCrud {
     return { organizacaoId: 10, colaboradorId: 7, perfil }

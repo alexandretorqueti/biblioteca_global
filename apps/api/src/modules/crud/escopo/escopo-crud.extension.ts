@@ -111,6 +111,24 @@ export interface ExtensaoEscopoCrud {
     ctx: ContextoEscopoCrud,
   ): string | undefined
 
+  /**
+   * Validação de domínio da ATUALIZAÇÃO com a linha atual em mãos (após o 404
+   * de escopo e a regra por estado, antes de `validarEscrita`): permite regras
+   * sobre o estado FINAL mesclado — campos enviados + linha atual (ex.: tarefa
+   * sem prazo proíbe lembrete — setar lembrete em tarefa sem prazo, ou zerar o
+   * prazo mantendo o lembrete, violam a regra; limpar o lembrete junto é válido).
+   * Deve lançar `BadRequestException` com erro claro ao violar a regra.
+   * Opcional: extensões sem regra não alteram o fluxo de update (demais
+   * projetos permanecem intocados).
+   */
+  validarAtualizacao?(
+    db: ProjetoDb,
+    tabela: MySqlTable,
+    campos: Record<string, unknown>,
+    linhaAtual: Record<string, unknown>,
+    ctx: ContextoEscopoCrud,
+  ): Promise<void> | void
+
   /** Condição de escopo para a checagem de existência do lado oposto de pivot. */
   condicaoPivotOposto(
     campo: CampoPivot,

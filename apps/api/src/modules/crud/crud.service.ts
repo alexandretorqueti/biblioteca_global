@@ -1204,6 +1204,18 @@ export class CrudService {
       )
       if (motivo) throw new ConflictException(motivo)
     }
+    // Validação de domínio do update com o registro atual (extensão de escopo):
+    // regras sobre o estado FINAL mesclado — campos enviados + linha atual
+    // (ex.: tarefa sem prazo proíbe lembrete). Lança 400 claro ao violar.
+    if (escopo) {
+      await escopo.extensao.validarAtualizacao?.(
+        await this.dbDoProjeto(projeto),
+        tabela,
+        campos,
+        atual,
+        escopo.ctx,
+      )
+    }
     if (tarefasMotor && dependencia.ids !== undefined) {
       await this.validarDependenciasTarefa(await this.dbDoProjeto(projeto), Number(atual.projetoId ?? atual.projeto_id), id, dependencia.ids)
     }
