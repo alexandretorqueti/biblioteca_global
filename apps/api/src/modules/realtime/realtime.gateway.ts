@@ -168,6 +168,16 @@ export class RealtimeGateway {
       client.send(JSON.stringify({ type: "helpdesk_subscribed", sessaoId: message.sessaoId, currentSequence: result.currentSequence }))
       return
     }
+    if (message.channel === "notifications") {
+      // Escopo é sempre o usuarioId autenticado (claims.sub do JWT): o body do
+      // subscribe nunca escolhe o usuário (precedente helpdesk/FORBIDDEN_SUBSCRIPTION).
+      const result = this.realtime.inscreverNotificacoes(session.projetoId, session.usuarioId, client, message.lastSequence)
+      if (!result.replayAvailable) {
+        client.send(JSON.stringify({ type: "notifications_replay_unavailable", currentSequence: result.currentSequence }))
+      }
+      client.send(JSON.stringify({ type: "notifications_subscribed", currentSequence: result.currentSequence }))
+      return
+    }
     client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Canal inválido" }))
   }
 

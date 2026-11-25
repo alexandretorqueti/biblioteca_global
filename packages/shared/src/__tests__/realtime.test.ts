@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   agentMapSnapshotSchema,
+  notificationRealtimeEventSchema,
   realtimeIngressEventSchema,
   realtimeServerMessageSchema,
   realtimeClientMessageSchema,
@@ -129,7 +130,25 @@ describe("contrato realtime do Mapa de Agentes", () => {
     expect(realtimeClientMessageSchema.safeParse({
       type: "subscribe", channel: "map", lastSequence: 3,
     }).success).toBe(true)
+    expect(realtimeClientMessageSchema.safeParse({
+      type: "subscribe", channel: "notifications",
+    }).success).toBe(true)
+    expect(realtimeClientMessageSchema.safeParse({
+      type: "subscribe", channel: "notifications", lastSequence: 7,
+    }).success).toBe(true)
     expect(realtimeClientMessageSchema.safeParse({ type: "ping" }).success).toBe(true)
+  })
+
+  it("canal notifications não aceita id de input (escopo é o usuarioId autenticado)", () => {
+    const parse = realtimeClientMessageSchema.safeParse({
+      type: "subscribe", channel: "notifications",
+    })
+    expect(parse.success).toBe(true)
+    if (parse.success) {
+      // O contrato não carrega campos de usuário no subscribe.
+      expect(Object.keys(parse.data)).not.toContain("usuarioId")
+      expect(Object.keys(parse.data)).not.toContain("userId")
+    }
   })
 
   it("rejeita mensagem de cliente com canal inválido", () => {
@@ -173,6 +192,20 @@ describe("contrato realtime do Mapa de Agentes", () => {
     }).success).toBe(true)
     expect(realtimeServerMessageSchema.safeParse({
       type: "map_replay_unavailable", projectId: 7, currentSequence: 3,
+    }).success).toBe(true)
+    expect(realtimeServerMessageSchema.safeParse({
+      type: "notifications_subscribed", currentSequence: 4,
+    }).success).toBe(true)
+    expect(realtimeServerMessageSchema.safeParse({
+      type: "notifications_replay_unavailable", currentSequence: 4,
+    }).success).toBe(true)
+    expect(realtimeServerMessageSchema.safeParse({
+      type: "notification.created", eventId: "n-1", sequence: 1,
+      occurredAt: "2026-09-30T10:00:00.000Z", notification: { id: 1, titulo: "Lembrete" },
+    }).success).toBe(true)
+    expect(realtimeServerMessageSchema.safeParse({
+      type: "notifications.unread.changed", eventId: "n-2", sequence: 2,
+      occurredAt: "2026-09-30T10:01:00.000Z", unreadCount: 3,
     }).success).toBe(true)
     expect(realtimeServerMessageSchema.safeParse({ type: "pong" }).success).toBe(true)
     expect(realtimeServerMessageSchema.safeParse({
@@ -240,5 +273,28 @@ describe("contrato realtime do Mapa de Agentes", () => {
       },
     })
     expect(invalido.success).toBe(false)
+  })
+
+  it("aceita eventos do canal notifications e rejeita payloads inválidos", () => {
+    expect(notificationRealtimeEventSchema.safeParse({
+      type: "notification.created", eventId: "n-1", sequence: 1,
+      occurredAt: "2026-09-30T10:00:00.000Z", notification: { id: 10, tipo: "lembrete" },
+    }).success).toBe(true)
+    expect(notificationRealtimeEventSchema.safeParse({
+      type: "notifications.unread.changed", eventId: "n-2", sequence: 2,
+      occurredAt: "2026-09-30T10:01:00.000Z", unreadCount: 0,
+    }).success).toBe(true)
+    expect(notificationRealtimeEventSchema.safeParse({
+      type: "notification.created", eventId: "", sequence: 1,
+      occurredAt: "2026-09-30T10:00:00.000Z", notification: {},
+    }).success).toBe(false)
+    expect(notificationRealtimeEventSchema.safeParse({
+      type: "notifications.unread.changed", eventId: "n-3", sequence: 0,
+      occurredAt: "2026-09-30T10:00:00.000Z", unreadCount: -1,
+    }).success).toBe(false)
+    expect(notificationRealtimeEventSchema.safeParse({
+      type: "notification.expired", eventId: "n-4", sequence: 1,
+      occurredAt: "2026-09-30T10:00:00.000Z",
+    }).success).toBe(false)
   })
 })
