@@ -311,3 +311,119 @@ export async function applyScratchSchema(pool: Pool): Promise<void> {
     await pool.query(ddl)
   }
 }
+
+/**
+ * DDL fiel das tabelas de CATÁLOGO do Motor-v3 (tarefa motor-frente-b-monitor-
+ * bridge, subtarefa 2). Derivado de SHOW CREATE TABLE da base real do motor
+ * (projeto_640, 2026-11-25) com a MESMA redução do MOTOR_SCRATCH_DDL: FOREIGN
+ * KEYs removidas (o scratch não provisiona a ordem/dependências; as colunas de
+ * referência ficam como índice comum). As uniques de código (motor_events.code,
+ * motor_actions.code) são preservadas — o fluxo de escrita real do catálogo
+ * depende delas.
+ *
+ * Fidelidade deliberada: `motor_occurrences` NÃO tem UNIQUE sobre
+ * (event_id, tarefa_id, subtarefa_id, generation) na tabela real — apenas
+ * PRIMARY KEY(id) + KEY(event_id). O EventClassifier.incrementOccurrence usa
+ * `INSERT ... ON DUPLICATE KEY UPDATE`; sem unique, essa cláusula nunca dispara
+ * sobre a tupla (cada classificação insere uma linha nova, count permanece 1 e
+ * a consulta de contagem lê rows[0]). O scratch reproduz EXATAMENTE esse
+ * comportamento real — adicionar um unique aqui mascararia a divergência e
+ * deixaria o teste infiel à base de produção. As asserts de classificação
+ * (que é o aceite) não dependem do incremento de count.
+ */
+export const MOTOR_CATALOG_SCRATCH_DDL: readonly string[] = [
+  `CREATE TABLE \`motor_events\` (
+    \`id\` int NOT NULL AUTO_INCREMENT,
+    \`code\` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`name\` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`category\` enum('erro','verificacao','conclusao','estado','humano','infra') COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`scope\` enum('global','projeto','tarefa','subtarefa') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'subtarefa',
+    \`priority\` int NOT NULL DEFAULT '100',
+    \`active\` tinyint NOT NULL DEFAULT '1',
+    \`created_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`updated_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (\`id\`),
+    UNIQUE KEY \`motor_events_code_unique\` (\`code\`)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  `CREATE TABLE \`motor_patterns\` (
+    \`id\` int NOT NULL AUTO_INCREMENT,
+    \`event_id\` int NOT NULL,
+    \`pattern\` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`match_type\` enum('regex','contains','exact') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'contains',
+    \`match_target\` enum('code','message','stack','action_result') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'message',
+    \`active\` tinyint NOT NULL DEFAULT '1',
+    \`created_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (\`id\`),
+    KEY \`motor_patterns_event_id_motor_events_id_fk\` (\`event_id\`)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  `CREATE TABLE \`motor_actions\` (
+    \`id\` int NOT NULL AUTO_INCREMENT,
+    \`code\` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`name\` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`description\` text COLLATE utf8mb4_unicode_ci,
+    \`primitives_json\` json NOT NULL,
+    \`on_partial_failure\` enum('continue','compensate','mark_dirty') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'continue',
+    \`compensation_action_id\` int DEFAULT NULL,
+    \`is_terminal\` tinyint NOT NULL DEFAULT '0',
+    \`version\` int NOT NULL DEFAULT '1',
+    \`active\` tinyint NOT NULL DEFAULT '1',
+    \`created_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`updated_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (\`id\`),
+    UNIQUE KEY \`motor_actions_code_unique\` (\`code\`),
+    KEY \`motor_actions_compensation_action_id_motor_actions_id_fk\` (\`compensation_action_id\`)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  `CREATE TABLE \`motor_reactions\` (
+    \`id\` int NOT NULL AUTO_INCREMENT,
+    \`event_id\` int NOT NULL,
+    \`occurrence\` int NOT NULL,
+    \`action_id\` int NOT NULL,
+    \`params_json\` json DEFAULT NULL,
+    \`condition_json\` json DEFAULT NULL,
+    \`version\` int NOT NULL DEFAULT '1',
+    \`active\` tinyint NOT NULL DEFAULT '1',
+    \`created_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (\`id\`),
+    KEY \`motor_reactions_action_id_motor_actions_id_fk\` (\`action_id\`),
+    KEY \`idx_motor_reactions_event_condition\` (\`event_id\`,\`active\`)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  `CREATE TABLE \`motor_occurrences\` (
+    \`id\` int NOT NULL AUTO_INCREMENT,
+    \`event_id\` int NOT NULL,
+    \`tarefa_id\` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`subtarefa_id\` int DEFAULT NULL,
+    \`generation\` int NOT NULL DEFAULT '1',
+    \`count\` int NOT NULL DEFAULT '1',
+    \`last_occurred_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`created_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (\`id\`),
+    KEY \`motor_occurrences_event_id_motor_events_id_fk\` (\`event_id\`)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  `CREATE TABLE \`motor_catalog_proposals\` (
+    \`id\` int NOT NULL AUTO_INCREMENT,
+    \`source\` enum('monitor','human') COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`status\` enum('auto_activated','pending_review','approved','rejected') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending_review',
+    \`event_id\` int DEFAULT NULL,
+    \`diagnosis\` text COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`proposal_json\` json NOT NULL,
+    \`tarefa_id\` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+    \`subtarefa_id\` int DEFAULT NULL,
+    \`reviewed_by\` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+    \`review_notes\` text COLLATE utf8mb4_unicode_ci,
+    \`created_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`updated_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (\`id\`),
+    KEY \`motor_catalog_proposals_event_id_motor_events_id_fk\` (\`event_id\`)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+]
+
+export async function applyCatalogScratchSchema(pool: Pool): Promise<void> {
+  for (const ddl of MOTOR_CATALOG_SCRATCH_DDL) {
+    await pool.query(ddl)
+  }
+}

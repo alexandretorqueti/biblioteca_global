@@ -10,6 +10,7 @@
  * - GET  /:slug/tarefas/:id/historico (cronológico, append-only — somente leitura)
  * - GET  /:slug/tarefas/:id/mensagens (chat — autor nome + data)
  * - POST /:slug/tarefas/:id/mensagens { texto } (autor = colaborador da sessão)
+ * - GET  /:slug/tarefas/minhas (dashboard pessoal — macro #7, subtarefa 1)
  *
  * Guards: JwtAuthGuard + ProjectScopeGuard (req.scope) + EscopoFluxoPorSlugGuard
  * (EscopoOrganizacaoGuard condicionado ao slug — req.escopoOrganizacao =
@@ -120,6 +121,24 @@ export class FluxoTarefasGlobalController {
     if (slug !== projeto.slug) throw new BadRequestException("Projeto inválido")
     const ctx = this.service.contextoDaRequest(req)
     return this.service.historico(projeto, ctx, id)
+  }
+
+  /**
+   * GET .../tarefas/minhas — dashboard pessoal (macro #7, subtarefa 1):
+   * somente as tarefas em que o colaborador da sessão é o responsável ativo,
+   * da organização da sessão, em estado não terminal. Rotas sem `:id` não
+   * colidem com as de 3 segmentos — a precedência do módulo no AppModule
+   * garante a casagem correta.
+   */
+  @Get(":slug/tarefas/minhas")
+  async minhasTarefas(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param("slug") slug: string,
+    req: RequisicaoComEscopoOrganizacao,
+  ) {
+    if (slug !== projeto.slug) throw new BadRequestException("Projeto inválido")
+    const ctx = this.service.contextoDaRequest(req)
+    return this.service.minhasTarefas(projeto, ctx)
   }
 
   @Get(":slug/tarefas/:id/mensagens")

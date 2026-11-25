@@ -42,10 +42,11 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common"
-import { and, asc, desc, eq, inArray } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm"
 import { randomUUID } from "node:crypto"
 import type { Perfil, ProjetoResumo } from "@biblioteca-global/shared"
 import {
+  areas,
   colaboradores,
   historicoTarefas,
   mensagensTarefa,
@@ -100,6 +101,19 @@ export interface ResultadoTransicao {
   }
   /** Notificação do sino criada nesta transição (null quando não aplicável). */
   notificacao: NotificacaoCriada | null
+}
+
+/** Item do dashboard pessoal — GET .../tarefas/minhas (macro #7, subtarefa 1). */
+export interface MinhaTarefaItem {
+  id: number
+  titulo: string
+  /** ISO-8601 ou null (sem prazo — ordenado por último). */
+  prazo: string | null
+  prioridade: "baixa" | "media" | "alta" | "urgente"
+  status: StatusTarefa
+  areaId: number | null
+  /** Nome da área (null se a linha da área sumir — FK notNull, leftJoin). */
+  areaNome: string | null
 }
 
 /** Item do histórico cronológico (append-only). */
@@ -691,6 +705,83 @@ export class FluxoTarefasGlobalService {
         criadoEm: (l.criadoEm as Date).toISOString(),
       }
     })
+  }
+
+  // ==========================================================================
+  // Dashboard pessoal — GET .../tarefas/minhas (macro #7, subtarefa 1)
+  // ==========================================================================
+
+  /**
+   * GET .../tarefas/minhas — lista as tarefas em que o COLABORADOR DA SESSÃO é
+   * o responsável ativo (dashboard pessoal / quiosque).
+   *
+   * Escopo row-level idêntico ao CRUD: `organizacao_id = ctx.organizacaoId` e
+   * `responsavel_id = ctx.colaboradorId` entram no WHERE — tarefa de outra
+   * organização nunca aparece. Somente estados não terminais
+   * (aberta/delegada/precisa_informacoes/aguardando_terceiro): concluída e
+   * cancelada saem da lista.
+   *
+   * Ordenação: prazo ASC com NULL por último, desempate por prioridade
+   * (urgente > alta > media > baixa) e, por fim, id (estabilidade).
+   */
+  async minhasTarefas(
+    projeto: ProjetoResumo,
+    ctx: ContextoSessao,
+  ): Promise<{ itens: MinhaTarefaItem[] }> {
+    const db = await this.dbDoProjeto(projeto)
+
+    const linhas = await db
+      .select({
+        id: tarefas.id,
+        titulo: tarefas.titulo,
+        prazo: tarefas.prazo,
+        prioridade: tarefas.prioridade,
+        status: tarefas.status,
+        areaId: tarefas.areaId,
+        areaNome: areas.nome,
+      })
+      .from(tarefas)
+      .leftJoin(areas, eq(tarefas.areaId, areas.id))
+      .where(
+        and(
+          eq(tarefas.organizacaoId, ctx.organizacaoId),
+          eq(tarefas.responsavelId, ctx.colaboradorId),
+          inArray(tarefas.status, [
+            "aberta",
+            "delegada",
+            "precisa_informacoes",
+            "aguardando_terceiro",
+          ]),
+        ),
+      )
+      .orderBy(
+        // prazo ASC com NULL por último (MySQL: IS NULL → 0/1 ordenável).
+        asc(sql`(${tarefas.prazo} IS NULL)`),
+        asc(tarefas.prazo),
+        // Desempate por prioridade: urgente primeiro (menor valor primeiro).
+        asc(
+          sql`CASE ${tarefas.prioridade}
+            WHEN 'urgente' THEN 1
+            WHEN 'alta' THEN 2
+            WHEN 'media' THEN 3
+            WHEN 'baixa' THEN 4
+            ELSE 5
+          END`,
+        ),
+        asc(tarefas.id),
+      )
+
+    return {
+      itens: linhas.map((l) => ({
+        id: Number(l.id),
+        titulo: l.titulo,
+        prazo: l.prazo,
+        prioridade: l.prioridade,
+        status: l.status as StatusTarefa,
+        areaId: l.areaId == null ? null : Number(l.areaId),
+        areaNome: l.areaNome,
+      })),
+    }
   }
 
   // ==========================================================================
