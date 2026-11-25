@@ -349,6 +349,33 @@ describe('TaskUnblockedConsumer — retomada de falha terminal de subtarefa (tar
       .toMatchObject({ blockReason: 'subtask_terminal_failure', action: 'subtask_reopened_for_programming', reopened: true })
   })
 
+  it("development_completion_protocol_exhausted: reverte a subtarefa 'blocked' para 'pending' e emite pedido de execução (incidente 1610)", async () => {
+    const env = fakeEnvironment({ terminalSubtask: { id: 1610, seq: 2, status: 'blocked' } })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'development_completion_protocol_exhausted', subtaskId: 1610 }))
+
+    const update = env.queries.find(q => q.sql.startsWith("UPDATE subtarefas SET status='pending'"))
+    expect(update).toBeDefined()
+    expect(update!.sql).toContain("status IN ('failed','blocked')")
+    expect(update!.sql).toContain('resultado=NULL')
+    expect(update!.params).toEqual([1610])
+
+    const ready = env.outbox('TASK_READY_FOR_PROGRAMMING')
+    expect(ready).toHaveLength(1)
+    expect(ready[0].via).toBe('connection')
+    expect(JSON.parse(ready[0].params[5] as string)).toMatchObject({
+      subtaskId: 1610, seq: 2, blockReason: 'development_completion_protocol_exhausted', resumedBy: 'monitor',
+    })
+    expect(env.connection.commit).toHaveBeenCalledOnce()
+    expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+      .toMatchObject({
+        blockReason: 'development_completion_protocol_exhausted',
+        action: 'subtask_reopened_for_programming',
+        subtaskId: 1610,
+        reopened: true,
+      })
+  })
+
   it('resolve a subtarefa via bloqueios pelo blockId do payload quando não há subtaskId', async () => {
     const env = fakeEnvironment({
       blockSubtaskId: 1403,
