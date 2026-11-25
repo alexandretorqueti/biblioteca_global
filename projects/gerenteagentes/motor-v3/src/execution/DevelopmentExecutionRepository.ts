@@ -1461,7 +1461,12 @@ export class MySqlDevelopmentExecutionRepository {
         })
         await this.insertOutbox(connection, deployRequest)
       }
-      if (!hasIntegratedCode) await this.enqueueSatisfiedDependentResumes(connection, context.databaseTaskId, taskCompleted)
+      // Tarefa 1121: dependentes elegíveis são retomados na CONCLUSÃO da tarefa
+      // (terminal_status='completed'), sem esperar o deploy — o mesmo gatilho
+      // roda quando há código integrado (DEPLOY_REQUESTED continua sendo emitido
+      // normalmente; o gatilho pós-deploy do DeployRepository segue como rede de
+      // segurança idempotente).
+      await this.enqueueSatisfiedDependentResumes(connection, context.databaseTaskId, taskCompleted)
       await this.wakeCapacityWaiters(connection, taskCompleted)
       await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
         type: 'subtask.status.changed', subtaskId: context.subtaskId,
@@ -1780,7 +1785,11 @@ export class MySqlDevelopmentExecutionRepository {
     )
   }
 
-  /** A conclusão sem deploy pode liberar dependentes do tipo verificacao/automacao. */
+  /**
+   * Tarefa 1121: a conclusão (terminal_status='completed') pode liberar
+   * dependentes de qualquer tipo conhecido — inclusive desenvolvimento, sem
+   * esperar o deploy (o deploy não é mais requisito de satisfação).
+   */
   private async enqueueSatisfiedDependentResumes(connection: PoolConnection, completedTaskId: number, source: QueueMessage): Promise<void> {
     const [result] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
       `SELECT dependent.id, dependent.external_id
@@ -1800,11 +1809,6 @@ export class MySqlDevelopmentExecutionRepository {
                  dependency.tipo IS NULL
                  OR dependency_f.terminal_status IS NULL
                  OR dependency_f.terminal_status <> 'completed'
-                 OR (dependency.tipo = 'desenvolvimento' AND NOT EXISTS (
-                       SELECT 1 FROM deploy_requests dependency_deploy
-                        WHERE dependency_deploy.tarefa_id = dependency.id
-                          AND dependency_deploy.status = 'succeeded'
-                    ))
                  OR dependency.tipo NOT IN ('desenvolvimento', 'verificacao', 'automacao')
                )
           )

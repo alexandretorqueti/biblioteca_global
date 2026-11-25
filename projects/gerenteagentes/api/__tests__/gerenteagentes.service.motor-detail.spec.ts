@@ -25,7 +25,20 @@ function requestMock(): ReturnType<typeof vi.fn> {
   });
 }
 
-function novoService(tarefaRow?: Record<string, unknown>): GerenteAgentesService {
+/** Títulos/status das tarefas dependidas (mock estável para os novos casos). */
+const DEPENDENCIAS_TAREFAS = [
+  { id: 3, titulo: 'Tarefa depende três' },
+  { id: 5, titulo: 'Tarefa depende cinco' },
+];
+const STATUS_DEPENDE = [
+  { taskId: 3, status: 'running' },
+  { taskId: 5, status: 'completed' },
+];
+
+function novoService(
+  tarefaRow?: Record<string, unknown>,
+  ligacoesDependencia: Array<{ dependeDeTarefaId: number }> = [],
+): GerenteAgentesService {
   let orderedSelects = 0;
   const task = { id: 1, externalId: 'task-1', titulo: 'Tarefa', ...(tarefaRow ?? {}) };
   const subtaskRows = [
@@ -34,7 +47,7 @@ function novoService(tarefaRow?: Record<string, unknown>): GerenteAgentesService
   ];
   const blockRows = [
     { subtarefaId: 10, reason: null, command: null, exitCode: null, excerpt: 'Dependência indisponível' },
-    { subtarefaId: null, reason: 'Bloqueio da tarefa não pertence à subtarefa', command: null, exitCode: null, excerpt: null },
+    { subtarefaId: null, reason: 'Bloqueio da tarefa não pertence à subtarefa', command: null, excerpt: null },
   ];
   const sessionRows = [
     { subtarefaId: 10, id: 101, model: 'openai/gpt-5.6-terra', purpose: 'development', status: 'active', openedAt: '2026-11-24T10:00:00Z', lastActivityAt: '2026-11-24T10:20:00Z', closedAt: null },
@@ -42,11 +55,29 @@ function novoService(tarefaRow?: Record<string, unknown>): GerenteAgentesService
     { subtarefaId: 11, id: 103, model: 'ollama/qwen3.8:27b-mtp-q8_0', purpose: 'development', status: 'completed', openedAt: '2026-11-24T07:00:00Z', lastActivityAt: '2026-11-24T07:40:00Z', closedAt: '2026-11-24T07:41:00Z' },
   ];
   const db = {
-    select: () => ({ from: () => ({ where: () => ({
-      limit: () => Promise.resolve([task]),
-      orderBy: () => { const n = ++orderedSelects; return Promise.resolve(n === 1 ? subtaskRows : n === 2 ? blockRows : sessionRows); },
-    }) }) }),
-    execute: vi.fn().mockResolvedValue([[], []]),
+    select: () => ({ from: () => ({ where: (where?: unknown) => {
+      // Discerne a tabela consultada pelas colunas referenciadas no
+      // condicional (queryChunks do drizzle) para direcionar o retorno do
+      // mock sem quebrar o fluxo já coberto (tarefas, subtarefas, bloqueios,
+      // sessões). Chunk em forma de mapa numérico = lista de ids do inArray.
+      const w = where as { queryChunks?: Array<{ queryChunks?: unknown[] }> } | null;
+      const flat = (w?.queryChunks ?? []).flatMap((c) => c?.queryChunks ?? [c]);
+      const tabelas = flat
+        .map((c) => (c as { table?: { name?: string; [k: symbol]: string } } | null)?.table)
+        .map((t) => (t ? String(t[Symbol.for('drizzle:Name')] ?? t.name ?? '') : ''))
+        .filter(Boolean);
+      const ehInArray = flat.some((c) => Array.isArray(c) && c.length > 0);
+      const isDependenciasLigacoes = tabelas.includes('tarefa_dependencias');
+      const isDependenciasTarefas = tabelas.includes('tarefas') && ehInArray;
+      const resultado = isDependenciasLigacoes ? ligacoesDependencia : isDependenciasTarefas ? DEPENDENCIAS_TAREFAS : [task];
+      return {
+        then: (onfulfilled: (valor: unknown) => void) => void Promise.resolve(resultado).then(onfulfilled),
+        toQuery: () => ({ sql: '', params: [] }),
+        limit: () => Promise.resolve([task]),
+        orderBy: () => { const n = ++orderedSelects; return Promise.resolve(n === 1 ? subtaskRows : n === 2 ? blockRows : sessionRows); },
+      };
+    } }) }),
+    execute: vi.fn(async () => [STATUS_DEPENDE, []]),
   };
   const config = { get: (key: string) => key === 'MOTOR_VERSION' ? 'v3' : undefined } as unknown as ConfigService;
   return new GerenteAgentesService({ obter: () => Promise.resolve(db) } as never, {} as never, {} as never, config);
@@ -108,5 +139,30 @@ describe('GerenteAgentesService — motor-detail', () => {
       expect.objectContaining({ id: 102, model: 'deepseek/deepseek-v4-flash', status: 'failed' }),
       expect.objectContaining({ id: 103, model: 'ollama/qwen3.8:27b-mtp-q8_0', status: 'completed' }),
     ]);
+  });
+
+  it('expõe dependencias combinando tarefa_dependencias e a coluna legada, deduplicadas e sem auto-referência, com títulos e status do banco', async () => {
+    // Tabela: ligações 5 e 3; legado: depends_on_task_id=5 (duplicata) e
+    // valor próprio (1) que deve ser descartado.
+    const detail = await novoService(
+      { dependsOnTaskId: 5 },
+      [{ dependeDeTarefaId: 5 }, { dependeDeTarefaId: 3 }],
+    ).motorDetailTarefa({} as never, 1);
+
+    expect(detail.task).toMatchObject({
+      dependsOnTaskIds: [3, 5],
+      dependencias: [
+        { id: 3, titulo: 'Tarefa depende três', status: 'running' },
+        { id: 5, titulo: 'Tarefa depende cinco', status: 'completed' },
+      ],
+    });
+  });
+
+  it('retorna dependsOnTaskIds e dependencias vazios (presentes, não undefined) quando a tarefa não tem dependências', async () => {
+    const detail = await novoService().motorDetailTarefa({} as never, 1);
+
+    expect(detail.task).toMatchObject({ dependsOnTaskIds: [], dependencias: [] });
+    expect(detail.task).toHaveProperty('dependsOnTaskIds');
+    expect(detail.task).toHaveProperty('dependencias');
   });
 });

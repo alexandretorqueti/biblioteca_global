@@ -231,6 +231,98 @@ describe("OperationMapScreen — cancelar e excluir tarefa", () => {
   })
 })
 
+describe("OperationMapScreen — dependências no resumo", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.__bundleMapa
+  })
+
+  function bundleDetalheComDependencias(
+    tarefas: TarefaFake[],
+    motorDetail: Record<string, unknown>,
+  ) {
+    return {
+      ...bundleFalso(tarefas, []),
+      http: {
+        request: async (method: string, path: string, config?: { body?: unknown }) => {
+          if (path.endsWith("/motor-detail")) return motorDetail
+          return bundleFalso(tarefas, []).http.request(method, path, config)
+        },
+      },
+    }
+  }
+
+  it("exibe o número e o título de cada tarefa dependida sob a descrição (via detail.dependencias)", async () => {
+    globalThis.__bundleMapa = bundleDetalheComDependencias(
+      [
+        tarefaFactory(20, "Tarefa dependida A", "completed"),
+        tarefaFactory(21, "Tarefa dependida B", "running"),
+        tarefaFactory(7, "Tarefa do mapa", "paused"),
+      ],
+      {
+        motorId: "m7",
+        exists: true,
+        task: {
+          status: "paused",
+          title: "Tarefa do mapa",
+          dependsOnTaskIds: [20, 21],
+          dependencias: [
+            { id: 20, titulo: "Tarefa dependida A", status: "completed" },
+            { id: 21, titulo: "Tarefa dependida B", status: "running" },
+          ],
+        },
+      },
+    )
+    renderScreen()
+    await abrirDetalhe(7)
+
+    const bloco = await screen.findByTestId("task-dependencies")
+    expect(bloco).toBeInTheDocument()
+    expect(bloco).toHaveTextContent("Depende das tarefas:")
+    expect(bloco).toHaveTextContent("#20 Tarefa dependida A")
+    expect(bloco).toHaveTextContent("#21 Tarefa dependida B")
+    // Bloco fica logo abaixo da descrição, dentro do resumo.
+    const descricao = screen.getByText("Sem descrição")
+    expect(descricao.compareDocumentPosition(bloco) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it("resolve ids via dependsOnTaskIds contra a lista de tarefas quando o detail não traz dependencias", async () => {
+    globalThis.__bundleMapa = bundleDetalheComDependencias(
+      [
+        tarefaFactory(20, "Tarefa dependida A", "completed"),
+        tarefaFactory(99, "Tarefa não carregada", "planned"),
+        tarefaFactory(7, "Tarefa do mapa", "paused"),
+      ],
+      {
+        motorId: "m7",
+        exists: true,
+        task: { status: "paused", title: "Tarefa do mapa", dependsOnTaskIds: [20, 999] },
+      },
+    )
+    renderScreen()
+    await abrirDetalhe(7)
+
+    const bloco = await screen.findByTestId("task-dependencies")
+    expect(bloco).toHaveTextContent("#20 Tarefa dependida A")
+    // Id ausente da lista carregada: exibe ao menos #999 sem quebrar o render.
+    expect(bloco).toHaveTextContent("#999")
+    expect(screen.getByTestId("task-dependency-999")).toBeInTheDocument()
+  })
+
+  it("não exibe o bloco de dependências quando a tarefa não depende de nada", async () => {
+    globalThis.__bundleMapa = bundleFalso(
+      [tarefaFactory(7, "Tarefa do mapa", "paused")],
+      [],
+    )
+    renderScreen()
+    await abrirDetalhe(7)
+
+    await waitFor(() => expect(screen.getByTestId("btn-cancel")).toBeInTheDocument())
+    expect(screen.queryByTestId("task-dependencies")).not.toBeInTheDocument()
+    expect(screen.queryByText("Depende das tarefas:")).not.toBeInTheDocument()
+  })
+})
+
 describe("OperationMapScreen — aba de durações", () => {
   afterEach(() => {
     vi.restoreAllMocks()

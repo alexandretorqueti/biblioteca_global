@@ -31,10 +31,11 @@ import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
  * Vínculo de origem: propositalmente NÃO usamos `depends_on_task_id`/
  * `tarefa_dependencias`. Dependências são um gate de execução
  * (`TaskCoordinator.checkDependenciesSatisfied`): dependência 'desenvolvimento'
- * exige deploy succeeded — a origem fechada por veredito (closed, sem deploy)
- * bloquearia a tarefa roteada para sempre; além disso o CRUD de tarefas exige
- * dependências no MESMO projeto. O vínculo equivalente em `tarefa_eventos`
- * nas duas tarefas atende ao requisito sem esses efeitos colaterais.
+ * exige terminal_status='completed' — a origem fechada por veredito (closed,
+ * nunca 'completed') bloquearia a tarefa roteada para sempre; além disso o CRUD
+ * de tarefas exige dependências no MESMO projeto. O vínculo equivalente em
+ * `tarefa_eventos` nas duas tarefas atende ao requisito sem esses efeitos
+ * colaterais.
  */
 
 /** Resultado do roteamento cross-project dentro da transação do persistAnalysis. */

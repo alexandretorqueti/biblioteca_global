@@ -3171,6 +3171,43 @@ export class GerenteAgentesService {
     if (!tarefa) {
       throw new NotFoundException('Tarefa não encontrada');
     }
+    // Dependências da tarefa para o resumo do mapa: vínculos N:N em
+    // `tarefa_dependencias` unidos à coluna legada `tarefas.depends_on_task_id`,
+    // deduplicados e sem auto-referência (mesmo padrão de
+    // listarTarefasComStatusCalculado). Títulos via select em `tarefas`.
+    // `tarefas.status` foi removida (migration 0030); o status do banco das
+    // tarefas depende é a última transição em `tarefas_status_historico`.
+    const ligacoesDependencia = await db
+      .select({ dependeDeTarefaId: tarefaDependencias.dependeDeTarefaId })
+      .from(tarefaDependencias)
+      .where(eq(tarefaDependencias.tarefaId, tarefaId));
+    const dependenciasIds = [...new Set([
+      ...(tarefa.dependsOnTaskId == null ? [] : [Number(tarefa.dependsOnTaskId)]),
+      ...ligacoesDependencia.map((l) => Number(l.dependeDeTarefaId)),
+    ].filter((id) => Number.isSafeInteger(id) && id > 0 && id !== tarefaId))].sort((a, b) => a - b);
+    let dependencias: Array<{ id: number; titulo: string; status: string }> = [];
+    if (dependenciasIds.length > 0) {
+      const dependenciasTarefas = await db
+        .select({ id: tarefas.id, titulo: tarefas.titulo })
+        .from(tarefas)
+        .where(inArray(tarefas.id, dependenciasIds));
+      const [statusDependencias] = await db.execute(sql`
+        SELECT h.tarefa_id AS taskId, h.status_novo AS status
+          FROM tarefas_status_historico h
+         WHERE h.id = (SELECT MAX(h2.id) FROM tarefas_status_historico h2
+                        WHERE h2.tarefa_id = h.tarefa_id)
+           AND h.tarefa_id IN (${sql.join(dependenciasIds.map((id) => sql`${id}`), sql`, `)})
+      `);
+      const statusPorDependencia = new Map<number, string>(
+        (statusDependencias as unknown as Array<{ taskId: number | string; status: string | null }>).map((linha) => [
+          Number(linha.taskId),
+          linha.status ?? 'planned',
+        ]),
+      );
+      dependencias = dependenciasTarefas
+        .sort((a, b) => Number(a.id) - Number(b.id))
+        .map((t) => ({ id: Number(t.id), titulo: t.titulo, status: statusPorDependencia.get(Number(t.id)) ?? 'planned' }));
+    }
     const motorId = tarefa.externalId || String(tarefa.id);
     try {
       const resp = await this.motorRequest(
@@ -3391,6 +3428,8 @@ export class GerenteAgentesService {
           promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
           recoveryEligibility: motorTask.recoveryEligibility ?? null,
           capacityWait: motorTask.capacityWait ?? null,
+          dependsOnTaskIds: dependenciasIds,
+          dependencias,
           testHealth: testHealth ? {
             delivery: motorTask.status === 'completed' || motorTask.status === 'deployed' ? 'completed' : motorTask.status,
             verification: Number(testHealth.regressions) === 0 ? 'verified_without_regression' : 'regression',
