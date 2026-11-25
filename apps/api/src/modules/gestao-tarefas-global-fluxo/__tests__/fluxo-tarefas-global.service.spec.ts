@@ -126,6 +126,7 @@ interface CondicaoRenderizada {
 function renderizar(
   cond: { toSQL?: () => { sql: string; params: unknown[] } },
 ): CondicaoRenderizada {
+  if (cond == null) return { sql: "", params: [] }
   let sql: string
   let params: unknown[]
   if (typeof cond.toSQL === "function") {
@@ -211,6 +212,49 @@ function valorIgual(a: unknown, b: unknown): boolean {
   return String(a) === String(b)
 }
 
+interface JoinInfo {
+  /** Tabela do lado direito do leftJoin (ex.: "areas"). */
+  tabela: Tabela
+  /** Chave camelCase da fixture na tabela esquerda (ex.: areaId). */
+  chaveLocal: string
+  /** Chave camelCase da fixture na tabela direita (ex.: id). */
+  chaveRemota: string
+}
+
+/**
+ * leftJoin com condição `eq(colEsq, colDir)`: o dialect renderiza as duas
+ * referências de coluna inlinadas (`` `area_id` = `id` ``) — extrai os dois
+ * nomes e mapeia para as chaves camelCase das fixtures.
+ */
+function registrarJoin(
+  tabelaEsq: Tabela,
+  tabelaDir: Tabela,
+  cond: unknown,
+): JoinInfo {
+  const { sql } = renderizar(cond as never)
+  // Dialect renderiza `` `tarefas`.`area_id` = `areas`.`id` `` — captura
+  // tabela.coluna de cada lado; as COLUNAS são os grupos 2 e 4.
+  const m = sql.match(/`(\w+)`\.`(\w+)`\s*=\s*`(\w+)`\.`(\w+)`/)
+  if (!m) {
+    const s = sql.match(/`(\w+)`\s*=\s*`(\w+)`/)
+    if (!s) throw new Error(`condição de join não suportada no fake: ${sql}`)
+    const chavesEsq = CHAVES_POR_TABELA.get(tabelaEsq) ?? new Map()
+    const chavesDir = CHAVES_POR_TABELA.get(tabelaDir) ?? new Map()
+    return {
+      tabela: tabelaDir,
+      chaveLocal: chavesEsq.get(s[1]!) ?? s[1]!,
+      chaveRemota: chavesDir.get(s[2]!) ?? s[2]!,
+    }
+  }
+  const chavesEsq = CHAVES_POR_TABELA.get(tabelaEsq) ?? new Map()
+  const chavesDir = CHAVES_POR_TABELA.get(tabelaDir) ?? new Map()
+  return {
+    tabela: tabelaDir,
+    chaveLocal: chavesEsq.get(m[2]!) ?? m[2]!,
+    chaveRemota: chavesDir.get(m[4]!) ?? m[4]!,
+  }
+}
+
 function avaliar(
   tabela: Tabela,
   fixture: Record<string, Array<Record<string, unknown>>>,
@@ -239,11 +283,43 @@ function dbFake(
   const transacoes: EventoTransacao[] = []
   let proximoId = 10_000
 
-  const whereChain = (tabela: Tabela, cond: unknown) => {
+  const whereChain = (
+    tabela: Tabela,
+    cond: unknown,
+    extra: { joins: JoinInfo[]; projecao: Map<string, string> | null } = { joins: [], projecao: null },
+  ) => {
     const { sql: condSql, params: condParams } = renderizar(cond as never)
-    const linhas = avaliar(tabela, fixture, condSql, condParams)
+    let linhas = avaliar(tabela, fixture, condSql, condParams)
+    // leftJoin fiel ao SQL: linha casada soma as colunas do lado direito;
+    // sem match as colunas do join ficam NULL (projeção mapeia undefined→null).
+    for (const join of extra.joins) {
+      linhas = linhas.map((linha) => {
+        const lado = (fixture[join.tabela] ?? []).find(
+          (j) => valorIgual(j[join.chaveRemota], linha[join.chaveLocal]),
+        )
+        if (!lado) return linha
+        const mesclada = { ...linha }
+        for (const [k, v] of Object.entries(lado)) {
+          if (!(k in mesclada)) mesclada[k] = v
+        }
+        return mesclada
+      })
+    }
+    // Projeção do `select({ alias: tabela.coluna })` — fiel ao shape que o
+    // Drizzle devolve (alias → valor; coluna ausente no leftJoin → null).
+    const projetadas =
+      extra.projecao && extra.projecao.size > 0
+        ? linhas.map((l) =>
+            Object.fromEntries(
+              [...extra.projecao!.entries()].map(([alias, chave]) => [
+                alias,
+                l[chave] ?? null,
+              ]),
+            ),
+          )
+        : linhas
     return {
-      limit: async () => linhas,
+      limit: async () => projetadas,
       // Fiel ao Drizzle: `select().from().where()` SEM limit/orderBy é um
       // builder awaitável — resolve direto para as linhas (nomesColaboradores
       // usa exatamente esse encadeamento).
@@ -252,13 +328,15 @@ function dbFake(
         rej?: (e: unknown) => void,
       ) => {
         try {
-          res(linhas)
+          res(projetadas)
         } catch (e) {
           rej?.(e)
         }
       },
-      // ORDER BY fiel: extrai (coluna, direção) de cada expressão `col asc|desc`
-      // e ordena as linhas — os GETs de histórico/chat dependem da ordem real.
+      // ORDER BY fiel: extrai (coluna, direção) de cada expressão e ordena
+      // as linhas — os GETs de histórico/chat dependem da ordem real.
+      // Suporta também as expressões do dashboard pessoal (minhasTarefas):
+      // `col IS NULL` (nulls last) e `CASE col WHEN 'x' THEN n ... END` (ranking).
       orderBy: (...ords: unknown[]) => {
         const chaves = CHAVES_POR_TABELA.get(tabela) ?? new Map()
         const criterios = ords.map((o) => {
@@ -269,15 +347,51 @@ function dbFake(
           const campo = (backticks[backticks.length - 1] ?? "").replace(/`/g, "")
           const dir = /\bdesc\b/i.test(osql) ? -1 : 1
           const chave = chaves.get(campo) ?? campo
-          return { campo, dir, chave }
+          if (/\bIS NULL\b/i.test(osql)) {
+            // `(col IS NULL) ASC` → 0 para não-nulos, 1 para NULLs (last).
+            return { tipo: "isNull" as const, chave, dir, mapa: null as Map<string, number> | null }
+          }
+          if (/\bCASE\b/i.test(osql)) {
+            const mapa = new Map<string, number>()
+            const reWhen = /WHEN '([^']*)' THEN (\d+)/gi
+            let mw: RegExpExecArray | null
+            while ((mw = reWhen.exec(osql)) !== null) {
+              mapa.set(mw[1]!, Number(mw[2]!))
+            }
+            return { tipo: "case" as const, chave, dir, mapa }
+          }
+          return { tipo: "valor" as const, chave, dir, mapa: null as Map<string, number> | null }
         })
-        const ordenadas = [...linhas].sort((a, b) => {
+        // Normalização de valores ordenáveis: Date/number direto; string
+        // numérica → número; string datada (ISO) → epoch; null → NaN.
+        const normalizar = (v: unknown): number => {
+          if (v == null) return NaN
+          if (v instanceof Date) return v.getTime()
+          if (typeof v === "number") return v
+          const n = Number(v)
+          if (Number.isFinite(n)) return n
+          const t = Date.parse(String(v))
+          return Number.isFinite(t) ? t : NaN
+        }
+        const valorOrd = (linha: Record<string, unknown>, c: (typeof criterios)[number]): number => {
+          const v = linha[c.chave]
+          if (c.tipo === "isNull") return v == null ? 1 : 0
+          if (c.tipo === "case") {
+            return c.mapa!.get(String(v)) ?? Number.MAX_SAFE_INTEGER
+          }
+          return normalizar(v)
+        }
+        const ordenadas = [...projetadas].sort((a, b) => {
           for (const c of criterios) {
-            const va = a[c.chave]
-            const vb = b[c.chave]
-            const na = va instanceof Date ? va.getTime() : Number(va)
-            const nb = vb instanceof Date ? vb.getTime() : Number(vb)
-            if (na !== nb) return (na > nb ? 1 : -1) * c.dir
+            const ka = valorOrd(a, c)
+            const kb = valorOrd(b, c)
+            if (Number.isNaN(ka) || Number.isNaN(kb)) {
+              // Ambos nulos → critério seguinte decide; um nulo → por último
+              // (nulls-last vem do critério IS NULL; coerente com ASC no SQL).
+              if (Number.isNaN(ka) && Number.isNaN(kb)) continue
+              return (Number.isNaN(ka) ? 1 : -1) * c.dir
+            }
+            if (ka !== kb) return (ka > kb ? 1 : -1) * c.dir
           }
           return 0
         })
@@ -294,21 +408,40 @@ function dbFake(
   }
 
   const db = {
-    select: () => ({
-      from: (tabela: unknown) => ({
-        where: (cond: unknown) => {
-          const chain = whereChain(nomeDaTabela(tabela), cond)
-          return {
-            limit: chain.limit,
-            orderBy: chain.orderBy,
-            then: chain.then,
+    select: (cols?: Record<string, { name?: string; table?: unknown }>) => {
+      // Projeção alias → chave camelCase da fixture: o Drizzle devolve o
+      // shape do select object (ex.: areaNome = areas.nome no leftJoin).
+      const projecao = new Map<string, string>()
+      for (const [alias, col] of Object.entries(cols ?? {})) {
+        const nomeCol = (col as { name?: string })?.name
+        if (!nomeCol) continue
+        const tabelaCol = (col as { table?: Record<symbol, unknown> }).table?.[
+          Symbol.for("drizzle:Name")
+        ] as string | undefined
+        const chavesCol = CHAVES_POR_TABELA.get((tabelaCol ?? "?") as Tabela)
+        projecao.set(alias, chavesCol?.get(nomeCol) ?? nomeCol)
+      }
+      return {
+        from: (tabela: unknown) => {
+          const joins: JoinInfo[] = []
+          const extra = { joins, projecao: projecao.size > 0 ? projecao : null }
+          const comJoin = {
+            where: (cond: unknown) => whereChain(nomeDaTabela(tabela), cond, extra),
+            leftJoin: (tDir: unknown, cond: unknown) => {
+              joins.push(
+                registrarJoin(nomeDaTabela(tabela), nomeDaTabela(tDir), cond),
+              )
+              return comJoin
+            },
+            // select(...).from(tabela).orderBy(...) sem where (não usado aqui,
+            // mas mantém o encadeamento completo do Drizzle).
+            orderBy: (...ords: unknown[]) =>
+              whereChain(nomeDaTabela(tabela), undefined as never, extra).orderBy(...ords),
           }
+          return comJoin
         },
-        // select(...).from(tabela).orderBy(...) sem where (não usado aqui, mas
-        // mantém o encadeamento completo do Drizzle).
-        orderBy: (...ords: unknown[]) => whereChain(nomeDaTabela(tabela), undefined as never).orderBy(...ords),
-      }),
-    }),
+      }
+    },
     update: (tabela: unknown) => ({
       set: (set: Record<string, unknown>) => ({
         where: (cond: unknown) => {
@@ -977,5 +1110,101 @@ describe("FluxoTarefasGlobalService — chat", () => {
       criadoEm: "2026-11-24T10:00:00.000Z",
     })
     expect(itens[1]!.autorNome).toBe("Alvo Lima")
+  })
+})
+
+// ============================================================================
+// Dashboard pessoal — GET .../tarefas/minhas (macro #7, subtarefa 1)
+// ============================================================================
+
+describe("FluxoTarefasGlobalService — minhasTarefas (dashboard pessoal)", () => {
+  const AREAS = [
+    { id: 1, organizacaoId: 10, nome: "Operações" },
+    { id: 2, organizacaoId: 10, nome: "Suporte" },
+  ]
+
+  it("retorna só tarefas do responsável da sessão, da org da sessão, em estado não terminal, com nome da área", async () => {
+    const tarefas = [
+      { id: 1, organizacaoId: 10, titulo: "Minha", responsavelId: 7, status: "aberta", areaId: 1, prioridade: "media", prazo: "2026-12-01T12:00:00.000Z" },
+      // Outro responsável → nunca aparece.
+      { id: 2, organizacaoId: 10, titulo: "De outro", responsavelId: 9, status: "aberta", areaId: 1, prioridade: "media", prazo: null },
+      // Outra organização → nunca aparece (isolamento row-level).
+      { id: 3, organizacaoId: 99, titulo: "Outra org", responsavelId: 7, status: "aberta", areaId: null, prioridade: "media", prazo: null },
+      // Estados terminais → saem da lista.
+      { id: 4, organizacaoId: 10, titulo: "Concluída", responsavelId: 7, status: "concluida", areaId: 1, prioridade: "urgente", prazo: "2026-12-01T12:00:00.000Z" },
+      { id: 5, organizacaoId: 10, titulo: "Cancelada", responsavelId: 7, status: "cancelada", areaId: null, prioridade: "alta", prazo: null },
+      // Não terminais → entram.
+      { id: 6, organizacaoId: 10, titulo: "Delegada", responsavelId: 7, status: "delegada", areaId: 2, prioridade: "baixa", prazo: "2026-12-02T12:00:00.000Z" },
+      { id: 7, organizacaoId: 10, titulo: "Precisa info", responsavelId: 7, status: "precisa_informacoes", areaId: null, prioridade: "alta", prazo: "2026-12-03T12:00:00.000Z" },
+      { id: 8, organizacaoId: 10, titulo: "Aguardando 3º", responsavelId: 7, status: "aguardando_terceiro", areaId: 2, prioridade: "urgente", prazo: null },
+    ]
+    const db = dbFake({ tarefas, colaboradores: COLABORADORES, areas: AREAS })
+    const svc = service(db)
+
+    const { itens } = await svc.minhasTarefas(PROJETO, ctx("operador"))
+    expect(itens.map((i) => i.id)).toEqual([1, 6, 7, 8])
+    // Área: nome pelo leftJoin; areaId nulo → areaNome null.
+    expect(itens[0]).toMatchObject({ id: 1, titulo: "Minha", areaId: 1, areaNome: "Operações", status: "aberta" })
+    expect(itens[1]!.areaNome).toBe("Suporte")
+    expect(itens[2]!.areaId).toBeNull()
+    expect(itens[2]!.areaNome).toBeNull()
+    // Prazo vem como string (datetime mode: "string").
+    expect(itens[0]!.prazo).toBe("2026-12-01T12:00:00.000Z")
+  })
+
+  it("ordena por prazo ASC com NULLs por último, desempate por prioridade (urgente primeiro) e id", async () => {
+    const base = { organizacaoId: 10, responsavelId: 7, status: "aberta", areaId: null }
+    const tarefas = [
+      { ...base, id: 1, titulo: "baixa sem prazo", prioridade: "baixa", prazo: null },
+      { ...base, id: 2, titulo: "alta sem prazo", prioridade: "alta", prazo: null },
+      { ...base, id: 3, titulo: "urgente sem prazo", prioridade: "urgente", prazo: null },
+      { ...base, id: 4, titulo: "urgente 05", prioridade: "urgente", prazo: "2026-12-05T12:00:00.000Z" },
+      { ...base, id: 5, titulo: "media 05", prioridade: "media", prazo: "2026-12-05T12:00:00.000Z" },
+      { ...base, id: 6, titulo: "baixa 05", prioridade: "baixa", prazo: "2026-12-05T12:00:00.000Z" },
+      { ...base, id: 7, titulo: "alta 04", prioridade: "alta", prazo: "2026-12-04T12:00:00.000Z" },
+    ]
+    const db = dbFake({ tarefas, colaboradores: COLABORADORES, areas: AREAS })
+    const svc = service(db)
+
+    const { itens } = await svc.minhasTarefas(PROJETO, ctx("operador"))
+    expect(itens.map((i) => i.id)).toEqual([7, 4, 5, 6, 3, 2, 1])
+  })
+
+  it("lista vazia quando o colaborador não tem tarefas ativas", async () => {
+    const tarefas = [
+      { id: 1, organizacaoId: 10, titulo: "De outro", responsavelId: 9, status: "aberta", areaId: null, prioridade: "media", prazo: null },
+    ]
+    const db = dbFake({ tarefas, colaboradores: COLABORADORES, areas: AREAS })
+    const svc = service(db)
+    const { itens } = await svc.minhasTarefas(PROJETO, ctx("operador"))
+    expect(itens).toEqual([])
+  })
+})
+
+// ============================================================================
+// Contexto da request — 403 sem colaborador ativo (macro #7, subtarefa 1)
+// ============================================================================
+
+describe("FluxoTarefasGlobalService — contextoDaRequest (403)", () => {
+  function svcSemDb() {
+    const db = dbFake({ tarefas: [], colaboradores: COLABORADORES })
+    return service(db)
+  }
+
+  it("403: sessão master da plataforma não opera em dados de negócio", async () => {
+    const svc = svcSemDb()
+    const req = {
+      escopoOrganizacao: { tipo: "master", usuarioId: 1 } as never,
+    }
+    await expect(
+      Promise.resolve().then(() => svc.contextoDaRequest(req as never)),
+    ).rejects.toBeInstanceOf(ForbiddenException)
+  })
+
+  it("403: escopo não resolvido (guard não executou)", async () => {
+    const svc = svcSemDb()
+    await expect(
+      Promise.resolve().then(() => svc.contextoDaRequest({} as never)),
+    ).rejects.toThrow(/EscopoOrganizacaoGuard não executou/)
   })
 })
