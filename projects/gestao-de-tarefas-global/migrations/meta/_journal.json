@@ -15,6 +15,13 @@
       "when": 1795495047091,
       "tag": "0001_plain_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1795584198029,
+      "tag": "0002_third_darkstar",
+      "breakpoints": true
     }
   ]
 }

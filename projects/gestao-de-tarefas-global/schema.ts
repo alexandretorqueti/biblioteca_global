@@ -156,10 +156,16 @@ export const regrasRecorrencia = mysqlTable("regras_recorrencia", {
   proximaGeracao: datetime("proxima_geracao", { mode: "string" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
+},
+(table) => [
+  // Varredura do agendador do motor de recorrência (macro 4, subtarefa 3):
+  // busca regras ativas pela próxima geração.
+  index("regras_recorrencia_ativa_proxima_geracao").on(table.ativa, table.proximaGeracao),
+])
 
 // ============================================================================
 // TAREFAS (Tarefas → Todas as tarefas; children: chat, histórico, anexos)
+// ============================================================================
 // ============================================================================
 
 export const tarefas = mysqlTable("tarefas", {
@@ -198,10 +204,13 @@ export const tarefas = mysqlTable("tarefas", {
     .default("aberta"),
   /** NULL = sem aviso. Proibido não-nulo quando prazo é NULL (validação de domínio). */
   lembreteAntecedenciaMinutos: int("lembrete_antecedencia_minutos"),
+  /** Vínculo instância↔regra: ON DELETE SET NULL — apagar/desativar a regra
+   * NÃO apaga as instâncias já geradas (REQ-F-009); a instância mantém
+   * identidade própria e o histórico é desvinculado (coluna → NULL). */
   regraRecorrenciaId: bigint("regra_recorrencia_id", {
     mode: "number",
     unsigned: true,
-  }).references(() => regrasRecorrencia.id),
+  }).references(() => regrasRecorrencia.id, { onDelete: "set null" }),
   concluidaEm: datetime("concluida_em", { mode: "string" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
