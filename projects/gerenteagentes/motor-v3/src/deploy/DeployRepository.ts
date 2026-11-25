@@ -1501,10 +1501,13 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
 
   /**
    * Busca tarefas dependentes elegíveis para retomada automática após deploy
-   * bem-sucedido. Todas as dependências N:N precisam estar satisfeitas: uma
-   * dependência de desenvolvimento requer deploy succeeded; tipos sem deploy
-   * requerem apenas terminal_status completed. Tipo ausente/desconhecido fica
-   * bloqueado por segurança.
+   * bem-sucedido. Tarefa 1121: rede de segurança idempotente — o gatilho
+   * primário passou a ser a CONCLUSÃO da dependência (sem esperar o deploy);
+   * este gatilho pós-deploy cobre dependentes ainda não retomados. Todas as
+   * dependências N:N precisam estar satisfeitas: tipo conhecido
+   * ('desenvolvimento'|'verificacao'|'automacao') exige apenas
+   * terminal_status completed (deploy NÃO é requisito); tipo
+   * ausente/desconhecido fica bloqueado por segurança.
    * Idempotente: exclui tarefas que já possuem TASK_RESUME_REQUESTED no outbox para este batch.
    */
   private async findDependentTasks(
@@ -1533,11 +1536,6 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
                  dependency.tipo IS NULL
                  OR dependency_f.terminal_status IS NULL
                  OR dependency_f.terminal_status <> 'completed'
-                 OR (dependency.tipo = 'desenvolvimento' AND NOT EXISTS (
-                       SELECT 1 FROM deploy_requests dependency_deploy
-                        WHERE dependency_deploy.tarefa_id = dependency.id
-                          AND dependency_deploy.status = 'succeeded'
-                    ))
                  OR dependency.tipo NOT IN ('desenvolvimento', 'verificacao', 'automacao')
                )
           )

@@ -78,19 +78,21 @@ export type DependencyBlockingReason = (typeof DEPENDENCY_BLOCKING_REASONS)[numb
  *   (raiz do falso diagnóstico da tarefa 1063: status nulo não é ambíguo,
  *   é dependência não concluída)
  * - concluída mas tipo ausente/desconhecido → `dependency_type_unknown`
- * - 'desenvolvimento' concluída com deploy 'failed' → `dependency_deploy_failed`
- * - 'desenvolvimento' concluída sem deploy 'succeeded' (null/'pending') →
- *   `dependency_deploy_pending`
+ *
+ * Tipos conhecidos ('desenvolvimento'|'verificacao'|'automacao') concluídas
+ * NUNCA bloqueiam desde a tarefa 1121 (dependência 'desenvolvimento' deixou de
+ * exigir deploy_requests.status='succeeded' — basta terminal_status='completed'),
+ * portanto só um tipo desconhecido/concluído chega ao último branch. As entradas
+ * `dependency_deploy_failed`/`dependency_deploy_pending` do enum são mantidas
+ * por compatibilidade de consumidores/observabilidade, mas não são mais
+ * retornadas para desenvolvimento concluído.
  */
 export function resolveDependencyBlockingReason(dependency: TaskDependencySnapshot): DependencyBlockingReason {
   if (dependency.found === false) return 'dependency_not_found'
   if (dependency.terminalStatus !== 'completed') return 'dependency_not_completed'
-  if (!dependency.taskType) return 'dependency_type_unknown'
-  if (dependency.taskType === 'desenvolvimento') {
-    return dependency.deployStatus === 'failed' ? 'dependency_deploy_failed' : 'dependency_deploy_pending'
-  }
-  // 'verificacao'/'automacao' concluídas nunca bloqueiam; qualquer outro tipo
-  // concluído bloqueia por tipo não reconhecido pelo gate.
+  // 'desenvolvimento'/'verificacao'/'automacao' concluídas satisfazem a
+  // dependência (tarefa 1121) e nunca chegam a esta função via gate; qualquer
+  // outro tipo (ou tipo nulo) concluído bloqueia por tipo não reconhecido.
   return 'dependency_type_unknown'
 }
 
@@ -676,11 +678,14 @@ export class TaskCoordinator {
   /**
    * Verifica se a dependência entre tarefas (depends_on_task_id) está satisfeita.
    *
-   * Regras:
+   * Regras (tarefa 1121 — a análise de dependentes inicia na CONCLUSÃO da
+   * dependência, sem esperar o deploy):
    * - dependsOnTaskId NULL → satisfeita (sem dependência)
-   * - dependência do tipo 'desenvolvimento' → exige terminal_status='completed' E deploy_requests.status='succeeded'
-   * - dependência do tipo 'verificacao' ou 'automacao' → exige apenas terminal_status='completed'
-   * - dependência não encontrada (dependencyTaskType null) → não satisfeita
+   * - dependência do tipo conhecido ('desenvolvimento'|'verificacao'|'automacao')
+   *   → exige apenas terminal_status='completed' (deploy pendente/em andamento
+   *   ou falho NÃO bloqueia mais)
+   * - dependência não encontrada (dependencyTaskType null) ou de tipo
+   *   desconhecido → não satisfeita
    */
   private checkDependenciesSatisfied(task: TaskSnapshot): {
     satisfied: boolean
@@ -693,8 +698,7 @@ export class TaskCoordinator {
         : []
     const blocking = dependencies.filter(dependency => {
       if (!dependency.taskType || dependency.terminalStatus !== 'completed') return true
-      if (dependency.taskType === 'desenvolvimento') return dependency.deployStatus !== 'succeeded'
-      if (dependency.taskType === 'verificacao' || dependency.taskType === 'automacao') return false
+      if (dependency.taskType === 'desenvolvimento' || dependency.taskType === 'verificacao' || dependency.taskType === 'automacao') return false
       return true
     })
     return { satisfied: blocking.length === 0, blocking }

@@ -54,7 +54,7 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
     expect(eventos.filter(e => e.evento === 'dependency_not_met')).toHaveLength(0)
   })
 
-  it('bloqueia análise quando dependência de desenvolvimento está concluída mas sem deploy', async () => {
+  it('libera análise quando dependência de desenvolvimento está concluída sem deploy (tarefa 1121)', async () => {
     const { coordinator, repository, runner, entries, eventos } = setup(task({
       dependsOnTaskId: 'dep-1',
       dependencyTaskType: 'desenvolvimento',
@@ -64,16 +64,25 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
 
     await coordinator.handle(command())
 
-    expect(repository.claimAnalysis).not.toHaveBeenCalled()
-    expect(runner.start).not.toHaveBeenCalled()
-    expect(entries.some(e => e.reasonCode === 'dependency_not_met')).toBe(true)
-    expect(eventos.some(e => e.evento === 'dependency_not_met')).toBe(true)
-    const evento = eventos.find(e => e.evento === 'dependency_not_met')
-    expect(evento?.payload).toMatchObject({
-      dependencyTaskId: 'dep-1',
-      dependencyStatus: 'completed',
-      dependencyDeployStatus: null,
-    })
+    expect(repository.claimAnalysis).toHaveBeenCalledWith('task-1', expect.any(String))
+    expect(runner.start).toHaveBeenCalled()
+    expect(entries.some(e => e.reasonCode === 'dependency_not_met')).toBe(false)
+    expect(eventos.some(e => e.evento === 'dependency_not_met')).toBe(false)
+  })
+
+  it('libera análise quando dependência de desenvolvimento está concluída com deploy falho (tarefa 1121)', async () => {
+    const { coordinator, repository, runner, eventos } = setup(task({
+      dependsOnTaskId: 'dep-42',
+      dependencyTaskType: 'desenvolvimento',
+      dependencyTerminalStatus: 'completed',
+      dependencyDeployStatus: 'failed',
+    }))
+
+    await coordinator.handle(command())
+
+    expect(repository.claimAnalysis).toHaveBeenCalled()
+    expect(runner.start).toHaveBeenCalled()
+    expect(eventos.filter(e => e.evento === 'dependency_not_met')).toHaveLength(0)
   })
 
   it('libera análise quando dependência de desenvolvimento está concluída E deployada', async () => {
@@ -152,7 +161,7 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
     const { coordinator, repository, runner, eventos } = setup(task({
       dependencies: [
         { taskId: 'dep-1', taskType: 'verificacao', terminalStatus: 'completed', deployStatus: null },
-        { taskId: 'dep-2', taskType: 'desenvolvimento', terminalStatus: 'completed', deployStatus: null },
+        { taskId: 'dep-2', taskType: 'desenvolvimento', terminalStatus: null, deployStatus: null },
       ],
     }))
 
@@ -161,7 +170,7 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
     expect(repository.claimAnalysis).not.toHaveBeenCalled()
     expect(runner.start).not.toHaveBeenCalled()
     expect(eventos.find(e => e.evento === 'dependency_not_met')?.payload).toMatchObject({
-      dependencies: [{ taskId: 'dep-2', terminalStatus: 'completed', deployStatus: null }],
+      dependencies: [{ taskId: 'dep-2', terminalStatus: null, reason: 'dependency_not_completed' }],
     })
   })
 
@@ -197,7 +206,7 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
     const { coordinator, eventos } = setup(task({
       dependsOnTaskId: 'dep-42',
       dependencyTaskType: 'desenvolvimento',
-      dependencyTerminalStatus: 'completed',
+      dependencyTerminalStatus: 'running',
       dependencyDeployStatus: 'failed',
     }))
 
@@ -212,9 +221,9 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
       taskType: 'desenvolvimento',
       dependencyTaskId: 'dep-42',
       dependencyTaskType: 'desenvolvimento',
-      dependencyStatus: 'completed',
+      dependencyStatus: 'running',
       dependencyDeployStatus: 'failed',
-      dependencyReason: 'dependency_deploy_failed',
+      dependencyReason: 'dependency_not_completed',
     })
   })
 
@@ -266,12 +275,11 @@ describe('TaskCoordinator — payload dependency_not_met enriquecido (task-p2-10
     expect(resolveDependencyBlockingReason(dependency({ terminalStatus: null, deployStatus: null }))).toBe('dependency_not_completed')
     expect(resolveDependencyBlockingReason(dependency({ taskType: null, terminalStatus: null }))).toBe('dependency_not_completed')
     expect(resolveDependencyBlockingReason(dependency({ terminalStatus: 'running' }))).toBe('dependency_not_completed')
-    // Desenvolvimento concluída com deploy falho.
-    expect(resolveDependencyBlockingReason(dependency({ terminalStatus: 'completed', deployStatus: 'failed' }))).toBe('dependency_deploy_failed')
-    // Desenvolvimento concluída com deploy pendente (null ou 'pending').
-    expect(resolveDependencyBlockingReason(dependency({ terminalStatus: 'completed', deployStatus: null }))).toBe('dependency_deploy_pending')
-    expect(resolveDependencyBlockingReason(dependency({ terminalStatus: 'completed', deployStatus: 'pending' }))).toBe('dependency_deploy_pending')
-    // Tipo ausente ou não reconhecido pelo gate (concluída).
+    // Desenvolvimento concluída NUNCA bloqueia (tarefa 1121): o gate libera
+    // com terminal_status='completed', independente do deploy, e
+    // resolveDependencyBlockingReason não é chamado para ela. As entradas de
+    // deploy do enum permanecem por compatibilidade, mas não são retornadas
+    // para desenvolvimento concluído.
     expect(resolveDependencyBlockingReason(dependency({ taskType: null, terminalStatus: 'completed' }))).toBe('dependency_type_unknown')
     expect(resolveDependencyBlockingReason(dependency({ taskType: 'tipo_novo', terminalStatus: 'completed' }))).toBe('dependency_type_unknown')
     // Tarefa dependente inexistente no banco (LEFT JOIN sem linha).
@@ -281,7 +289,7 @@ describe('TaskCoordinator — payload dependency_not_met enriquecido (task-p2-10
   it('evento e motor_operation_log incluem taskType da tarefa bloqueada e dependencyReason', async () => {
     const { coordinator, entries, eventos } = setup(task({
       taskType: 'automacao',
-      dependencies: [dependency({ terminalStatus: 'completed', deployStatus: null })],
+      dependencies: [dependency({ terminalStatus: 'running', deployStatus: null })],
     }))
 
     await coordinator.handle(command())
@@ -290,12 +298,24 @@ describe('TaskCoordinator — payload dependency_not_met enriquecido (task-p2-10
       taskType: 'automacao',
       dependencyTaskId: 'dep-1',
       dependencyTaskType: 'desenvolvimento',
-      dependencyStatus: 'completed',
+      dependencyStatus: 'running',
       dependencyDeployStatus: null,
-      dependencyReason: 'dependency_deploy_pending',
+      dependencyReason: 'dependency_not_completed',
     }
     expect(eventos.find(e => e.evento === 'dependency_not_met')?.payload).toMatchObject(esperado)
     expect(entries.find(e => e.reasonCode === 'dependency_not_met')?.result).toMatchObject(esperado)
+  })
+
+  it('desenvolvimento concluída com deploy pendente libera a análise (tarefa 1121)', async () => {
+    const { coordinator, repository, runner } = setup(task({
+      taskType: 'automacao',
+      dependencies: [dependency({ terminalStatus: 'completed', deployStatus: null })],
+    }))
+
+    await coordinator.handle(command())
+
+    expect(repository.claimAnalysis).toHaveBeenCalled()
+    expect(runner.start).toHaveBeenCalled()
   })
 
   it('dependência sem facts gera dependency_not_completed (incidente tarefa 1063)', async () => {
@@ -323,16 +343,15 @@ describe('TaskCoordinator — payload dependency_not_met enriquecido (task-p2-10
     })
   })
 
-  it('deploy falho em dependência de desenvolvimento gera dependency_deploy_failed', async () => {
-    const { coordinator, eventos } = setup(task({
+  it('deploy falho em dependência de desenvolvimento concluída NÃO bloqueia (tarefa 1121)', async () => {
+    const { coordinator, repository, runner } = setup(task({
       dependencies: [dependency({ terminalStatus: 'completed', deployStatus: 'failed' })],
     }))
 
     await coordinator.handle(command())
 
-    expect(eventos.find(e => e.evento === 'dependency_not_met')?.payload).toMatchObject({
-      dependencyReason: 'dependency_deploy_failed',
-    })
+    expect(repository.claimAnalysis).toHaveBeenCalled()
+    expect(runner.start).toHaveBeenCalled()
   })
 
   it('tipo desconhecido concluído gera dependency_type_unknown', async () => {
@@ -358,10 +377,10 @@ describe('TaskCoordinator — payload dependency_not_met enriquecido (task-p2-10
 
     await coordinator.handle(command())
 
-    // dep-2 (verificacao concluída) não bloqueia — paridade de gate preservada.
+    // dep-2 (verificacao concluída) e dep-3 (desenvolvimento concluída,
+    // tarefa 1121) não bloqueiam — só a não concluída (dep-1).
     const esperado = [
       { taskId: 'dep-1', terminalStatus: null, reason: 'dependency_not_completed' },
-      { taskId: 'dep-3', terminalStatus: 'completed', reason: 'dependency_deploy_failed' },
     ]
     expect(eventos.find(e => e.evento === 'dependency_not_met')?.payload).toMatchObject({ dependencies: esperado })
     expect(entries.find(e => e.reasonCode === 'dependency_not_met')?.result).toMatchObject({ dependencies: esperado })

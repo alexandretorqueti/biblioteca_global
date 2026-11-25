@@ -77,6 +77,25 @@ describe('DeployRepository — retomada automática de tarefas dependentes', () 
     expect(dependentQuery?.sql).toContain('analysis_started_at IS NULL')
   })
 
+  it('completeBatch não exige deploy succeeded na regra de dependência (tarefa 1121)', async () => {
+    const source = createQueueMessage({
+      type: 'DEPLOY_BATCH_SUCCEEDED',
+      taskId: 'task-1',
+      executionId: 'exec-1',
+      payload: { batchId: 'batch-1' },
+    })
+
+    await repo.completeBatch('batch-1', true, null, source)
+
+    const dependentQuery = queries.find(q => q.sql.includes('depends_on_task_id IN'))
+    // O gatilho pós-deploy é rede de segurança idempotente sob a MESMA regra
+    // nova: dependência satisfeita = tipo conhecido + terminal_status
+    // 'completed' (deploy NÃO é requisito).
+    expect(dependentQuery?.sql).toContain("dependency.tipo NOT IN ('desenvolvimento', 'verificacao', 'automacao')")
+    expect(dependentQuery?.sql).not.toContain("dependency.tipo = 'desenvolvimento' AND NOT EXISTS")
+    expect(dependentQuery?.sql).not.toContain("dependency_deploy.status = 'succeeded'")
+  })
+
   it('completeBatch com success=false NÃO consulta tarefas dependentes', async () => {
     const source = createQueueMessage({
       type: 'DEPLOY_BATCH_FAILED',
