@@ -45,6 +45,8 @@ import {
   SemColaboradorAtivoError,
   type ContextoEscopoOrganizacao,
 } from "../../../../../../projects/gestao-de-tarefas-global/src/tenancy/tipos"
+import { validarRegra } from "../../../../../../projects/gestao-de-tarefas-global/src/recorrencia/validar-regra"
+import type { RegraRecorrencia } from "../../../../../../projects/gestao-de-tarefas-global/src/recorrencia/tipos"
 import * as schemaGestao from "../../../../../../projects/gestao-de-tarefas-global/schema"
 import type { ProjetoDb } from "../project-db.factory"
 import type {
@@ -106,6 +108,58 @@ function propDaColuna(tabela: MySqlTable, coluna: Column): string | undefined {
 /** A tabela é a de tarefas deste projeto (homônimas de outros slugs não chegam aqui). */
 function ehTabelaTarefas(tabela: MySqlTable): boolean {
   return getTableName(tabela) === getTableName(schemaGestao.tarefas)
+}
+
+/** A tabela é a de regras de recorrência deste projeto. */
+function ehTabelaRegrasRecorrencia(tabela: MySqlTable): boolean {
+  return getTableName(tabela) === getTableName(schemaGestao.regrasRecorrencia)
+}
+
+/**
+ * Reconstroi a regra escrita (create: valores completos do body; update
+ * parcial: valida com o que veio — campos ausentes não são revalidados)
+ * para o domínio do motor de recorrência (subtarefa 1 — `validarRegra`).
+ * Chaves = props do Drizzle, datas como string ISO, `diasSemana` como
+ * array de números 0–6.
+ */
+function regraDaEscrita(valores: Record<string, unknown>): RegraRecorrencia {
+  const bruto = (nome: string): unknown => valores[nome] ?? null
+  return {
+    id: Number(bruto("id") ?? 0) || 0,
+    organizacaoId: Number(bruto("organizacaoId") ?? 0) || 0,
+    titulo: String(bruto("titulo") ?? ""),
+    descricao: (bruto("descricao") as string | null) ?? null,
+    areaId: Number(bruto("areaId") ?? 0) || 0,
+    responsavelId: Number(bruto("responsavelId") ?? 0) || 0,
+    frequencia: (bruto("frequencia") as RegraRecorrencia["frequencia"]) ?? "diaria",
+    diasSemana:
+      bruto("diasSemana") === null || bruto("diasSemana") === undefined
+        ? null
+        : (bruto("diasSemana") as number[]),
+    horaDoDia: (bruto("horaDoDia") as string | null) ?? null,
+    dataInicio: String(bruto("dataInicio") ?? ""),
+    dataFim: (bruto("dataFim") as string | null) ?? null,
+    ativa: (bruto("ativa") as boolean | undefined) ?? true,
+    proximaGeracao: (bruto("proximaGeracao") as string | null) ?? null,
+  }
+}
+
+/**
+ * Valida a escrita em `regras_recorrencia` com o domínio do motor de
+ * recorrência (macro 4, subtarefa 1 — `validarRegra`): semanal exige
+ * `diasSemana` não vazia (0–6) e `dataFim` ≥ `dataInicio` → 400 com os
+ * erros objetivos. A validação de form `minDate` no front (config.ts) é
+ * conveniência; aqui está a barreira de verdade.
+ */
+function validarRegraRecorrenciaEscrita(
+  valores: Record<string, unknown>,
+): void {
+  const erros = validarRegra(regraDaEscrita(valores))
+  if (erros.length > 0) {
+    throw new BadRequestException(
+      `Regra de recorrência inválida: ${erros.join("; ")}`,
+    )
+  }
 }
 
 /**
@@ -211,6 +265,13 @@ export class GestaoTarefasGlobalEscopo implements ExtensaoEscopoCrud {
     operacao: "create" | "update",
   ): Promise<void> {
     void operacao
+    // Regras de recorrência (macro 4, subtarefa 1): validação do domínio —
+    // semanal exige diasSemana não vazia (0–6) e dataFim ≥ dataInicio → 400
+    // objetivo. A FK (organizacao/area/responsável) segue validada no loop
+    // abaixo.
+    if (ehTabelaRegrasRecorrencia(tabela)) {
+      validarRegraRecorrenciaEscrita(valores)
+    }
     for (const fk of getTableConfig(tabela).foreignKeys) {
       const { columns, foreignColumns, foreignTable } = fk.reference()
       const local = columns[0]
