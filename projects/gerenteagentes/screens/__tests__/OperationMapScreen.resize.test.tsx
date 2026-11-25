@@ -85,9 +85,23 @@ function renderScreen() {
  * efetiva é verificada no CSS emitido.
  */
 function cssNoHead(): string {
+  // O emotion pode inserir as regras de duas formas: como texto no <style>
+  // (textContent) ou via CSSOM (sheet.insertRule), dependendo do modo
+  // speedy do cache. Em modo speedy o textContent fica vazio e as regras só
+  // são visíveis em sheet.cssRules — coletamos as duas fontes. O cssText do
+  // CSSOM serializa com espaço após os dois-pontos ("width: 480px"), então
+  // normalizamos para o formato compacto esperado nas asserções.
   return Array.from(document.head.querySelectorAll("style"))
-    .map(style => style.textContent ?? "")
+    .map(style => {
+      const fromText = style.textContent ?? ""
+      let fromSheet = ""
+      try {
+        fromSheet = Array.from(style.sheet?.cssRules ?? []).map(rule => rule.cssText).join("\n")
+      } catch { /* sheet inacessível — ignora */ }
+      return `${fromText}\n${fromSheet}`
+    })
     .join("\n")
+    .replace(/:\s+/g, ":")
 }
 
 /** Arrasta a alça: pointerDown na alça, pointermove na janela, pointerUp. */
