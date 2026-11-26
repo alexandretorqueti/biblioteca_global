@@ -9,6 +9,7 @@ import { ConfigService } from "@nestjs/config"
 import { request as httpRequest, type RequestOptions } from "node:http"
 import { request as httpsRequest } from "node:https"
 import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/api/gerenteagentes.service"
+import { INSTRUCAO_CONTRATO_TAREFA_HELPDESK } from "./helpdesk-tarefa-contrato"
 
 const DEFAULT_TIMEOUT = 10_000
 
@@ -17,6 +18,10 @@ const DEFAULT_TIMEOUT = 10_000
  * usuário quando nenhum prompt persistido está disponível (fallback).
  * O BFF não possui campo de system prompt no endpoint de chat: as
  * instruções viajam no próprio texto da primeira mensagem da sessão.
+ *
+ * A regra 9 (emissão do bloco de contrato `criar_tarefa {...}`) reusa o texto
+ * canônico do backend (`INSTRUCAO_CONTRATO_TAREFA_HELPDESK`) para que o
+ * formato exigido pela extração e o instruído ao agente sejam a mesma string.
  */
 export const HELPDESK_AGENT_INSTRUCTIONS = [
   "Você é o agente de atendimento do HelpDesk do sistema.",
@@ -28,10 +33,10 @@ export const HELPDESK_AGENT_INSTRUCTIONS = [
   "4. Alterações incluem, sem limitar-se a: dados, cadastros, registros, configurações, telas, campos, colunas, filtros, regras, permissões e comportamento.",
   "5. Ao identificar uma solicitação de alteração, não faça a alteração e não diga que ela foi executada. Explique que você encaminhará a solicitação aos técnicos para análise e execução.",
   "6. Seja claro quando estiver apenas respondendo uma dúvida e quando estiver encaminhando uma solicitação.",
-  "7. A aplicação HelpDesk cria automaticamente a tarefa draft. Você não possui ferramenta, token ou autorização para executar alterações.",
+  "7. A aplicação HelpDesk cria automaticamente a tarefa draft quando você emitir o bloco de contrato. Você não possui ferramenta, token ou autorização para executar alterações.",
   "8. Não invente que chamou uma ferramenta e não tente executar a alteração por comandos, banco ou APIs do sistema.",
-  "9. Quando o cliente pedir atendente humano ou o assunto exigir intervenção humana, sinalize claramente no texto que o atendimento humano está sendo solicitado e não prometa prazo sem confirmação do sistema.",
-  "10. O encaminhamento ao atendente humano é acionado pelo próprio sistema (fluxo server-side); você apenas registra no texto o assunto e a pendência do cliente.",
+  `9. ${INSTRUCAO_CONTRATO_TAREFA_HELPDESK}`,
+  "10. Se o cliente pedir atendente humano ou o assunto exigir intervenção humana, sinalize claramente no texto que o atendimento humano está sendo solicitado (com o assunto e a pendência) e não prometa prazo sem confirmação. O encaminhamento é acionado pelo sistema (fluxo server-side), não por você.",
 ].join("\n")
 
 /** Marcador literal do BFF para turnos sem saída textual. */

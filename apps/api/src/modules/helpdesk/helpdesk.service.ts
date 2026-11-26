@@ -18,6 +18,10 @@ import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/ap
 import { TransbordoNotifier, type TransbordoResumo } from "../transbordo/transbordo.notifier"
 import { TransbordoService } from "../transbordo/transbordo.service"
 import { ehRespostaInvalida } from "./helpdesk.bridge"
+import {
+  extrairContratoTarefa,
+  textoConfirmacaoTarefa,
+} from "./helpdesk-tarefa-contrato"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable, projetos: projectTable, usuarios: userTable } = coreSchema
 /** O catálogo de agentes/modelos do GerenteAgentes vive em projeto_640. */
@@ -259,7 +263,7 @@ export class HelpDeskService {
     sessionKey: string
     cursor: string | null
     usuarioId: number
-  }): Promise<{ ok: boolean; messageId?: number; resposta?: string }> {
+  }): Promise<{ ok: boolean; messageId?: number; resposta?: string; tarefa?: { id: number; externalId: string; status: string } | null }> {
     const db = await this.getCoreDb()
 
     const [sessao] = await db
@@ -269,8 +273,26 @@ export class HelpDeskService {
       .limit(1)
     if (!sessao) return { ok: false }
 
-    const resposta = await this.bridge.obterRespostaPorCursor(input.sessionKey, input.cursor)
-    if (resposta === undefined || ehRespostaInvalida(resposta)) return { ok: false }
+    const respostaBruta = await this.bridge.obterRespostaPorCursor(input.sessionKey, input.cursor)
+    if (respostaBruta === undefined || ehRespostaInvalida(respostaBruta)) return { ok: false }
+
+    // Ponto único de extração do bloco de contrato emitido pelo agente
+    // (`criar_tarefa {...}`): vale para o caminho síncrono, reconciler e /status.
+    const { textoVisivel, contrato } = extrairContratoTarefa(respostaBruta)
+    if (!textoVisivel) return { ok: false }
+
+    // Cria a tarefa draft ANTES de persistir: se falhar, a resposta é
+    // persistida inalterada (sem o bloco) e o usuário não perde o texto.
+    let tarefa: { id: number; externalId: string; status: string } | null = null
+    if (contrato) {
+      tarefa = await this.criarTarefaDraft(sessao.projetoId, textoVisivel, contrato.titulo, contrato.descricao)
+      if (!tarefa) {
+        this.logger.warn(`Contrato de tarefa presente mas draft não foi criado; resposta persistida sem confirmação (sessao=${input.sessaoId})`)
+      }
+    }
+
+    const textoFinal = tarefa ? `${textoVisivel}\n\n${textoConfirmacaoTarefa(tarefa)}` : textoVisivel
+    const resposta = textoFinal.length > 10_000 ? textoFinal.slice(0, 10_000) : textoFinal
 
     const [jaPersistida] = await db
       .select({ id: helpDeskMessageTable.id })
@@ -308,7 +330,7 @@ export class HelpDeskService {
       payload: { processing: false, responded: true },
     })
 
-    return { ok: true, messageId: jaPersistida?.id, resposta }
+    return { ok: true, messageId: jaPersistida?.id, resposta, tarefa }
   }
 
   // ===========================================================================
@@ -646,10 +668,15 @@ export class HelpDeskService {
 
   // ===========================================================================
   // CRIAÇÃO DE TAREFA NO PROJETO (draft) — acoplada via contrato do agente
-  // (subtarefa 2 extrai o bloco de contrato em `persistirRespostaAgente`)
+  // (extração do bloco `criar_tarefa {...}` em `persistirRespostaAgente`)
   // ===========================================================================
 
-  private async criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<{ id: number; externalId: string; status: string } | null> {
+  private async criarTarefaDraft(
+    projetoId: number,
+    textoVisivel: string,
+    titulo: string,
+    descricao: string,
+  ): Promise<{ id: number; externalId: string; status: string } | null> {
     try {
       const projetoCaptado = await this.obterProjetoCaptado(projetoId)
       if (!projetoCaptado) {
@@ -659,16 +686,15 @@ export class HelpDeskService {
 
       // `projetoId` é o ID do projeto da plataforma (ex.: TaQui = 6611),
       // enquanto tarefas e projetos_captados vivem no database do Gerente de
-      // Agentes (projeto_640). Usar projetoId aqui tentava inserir em
+      // Agentes (projeto_640). Usar projetoId aqui tentaria inserir em
       // projeto_6611, que não possui a tabela operacional `tarefas`.
-      const titulo = `[HelpDesk] ${solicitacao.substring(0, 100)}`
       if (!this.gerenteAgentes) throw new Error("GerenteAgentes indisponível")
       const tarefa = await this.gerenteAgentes.criarTarefa(
         { id: projetoId, nome: "HelpDesk", slug: "helpdesk", perfil: "admin" },
         {
           managedProjectId: projetoCaptado.id,
-          titulo,
-          descricao: textoOriginal,
+          titulo: titulo.substring(0, 100),
+          descricao: `${textoVisivel}\n\nSolicitação original: ${descricao}`,
           tipo: "desenvolvimento",
           status: "draft",
           autoStart: false,
@@ -676,21 +702,12 @@ export class HelpDeskService {
           databaseProjectId: GERENTE_AGENTES_PROJECT_ID,
         },
       ) as { id: number; externalId?: string; status?: string }
-      this.logger.log(`Tarefa draft criada no projeto ${projetoId}: "${solicitacao.substring(0, 80)}..."`)
+      this.logger.log(`Tarefa draft criada no projeto ${projetoId}: "${titulo.substring(0, 80)}..."`)
       return { id: Number(tarefa.id), externalId: tarefa.externalId ?? `task-${tarefa.id}`, status: tarefa.status ?? "draft" }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       this.logger.warn(`Não foi possível criar tarefa no projeto ${projetoId}: ${msg}`)
       return null
     }
-  }
-
-  /**
-   * Confirmação exibida ao usuário quando a subtarefa 2 extrai o bloco de
-   * contrato da resposta do agente e cria a tarefa draft.
-   */
-  confirmarTarefa(resposta: string, tarefa: { id: number; externalId: string; status: string } | null): string {
-    if (!tarefa) return resposta
-    return `${resposta}\n\nSolicitação registrada como tarefa draft ${tarefa.externalId} (id ${tarefa.id}). Estado atual: ${tarefa.status}. Você pode perguntar por esse identificador para acompanhar o andamento.`
   }
 }

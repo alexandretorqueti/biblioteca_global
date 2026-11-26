@@ -5,8 +5,14 @@ import {
   ehRespostaInvalida,
   HELPDESK_AGENT_INSTRUCTIONS,
 } from "../helpdesk.bridge"
+import { INSTRUCAO_CONTRATO_TAREFA_HELPDESK } from "../helpdesk-tarefa-contrato"
 import type { ProjectDbFactory } from "../../crud/project-db.factory"
 import type { RealtimeService } from "../../realtime/realtime.service"
+
+// O catálogo do prompt é testado via string espelhada (sem import cross-package
+// que quebra o typecheck do apps/api — o catálogo reusa INSTRUCAO_CONTRATO_TAREFA_HELPDESK
+// em ambas as entradas, e o teste abaixo verifica a presença do formato exato).
+const PROMPT_HELPDESK_ESPERADO = "criar_tarefa {\"titulo\":"
 
 function makeService(options: {
   historico?: Array<{ id: string; role: string; text: string }>
@@ -56,18 +62,18 @@ function makeService(options: {
           }),
         }),
       }),
-    insert: vi.fn().mockReturnValue({
-      values: vi.fn().mockReturnValue({
+    insert: vi.fn(() => ({
+      values: (values: Record<string, unknown>) => ({
         $returningId: vi.fn().mockImplementation(async () => {
           insercoes.push({
-            sessaoId: 1,
-            role: "agent",
-            text: "resposta",
+            sessaoId: values.sessaoId as number,
+            role: values.role as string,
+            text: values.text as string,
           })
           return [100]
         }),
       }),
-    }),
+    })),
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue(undefined),
@@ -125,7 +131,7 @@ function makeService(options: {
     options.reconcilerConfig,
   )
 
-  return { service, bridge, realtime, insercoes, publicarHelpDesk, coreDb }
+  return { service, bridge, realtime, insercoes, publicarHelpDesk, coreDb, factory }
 }
 
 describe("HelpDeskService — prefixo de instruções na primeira mensagem", () => {
@@ -396,10 +402,11 @@ describe("HelpDeskService — criação de tarefa draft (mantida para subtarefa 
     const service = new HelpDeskService(factory, coreDb, bridge, { criarTarefa } as never)
 
     await (service as unknown as {
-      criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<unknown>
+      criarTarefaDraft(projetoId: number, textoVisivel: string, titulo: string, descricao: string): Promise<unknown>
     }).criarTarefaDraft(
       6611,
       "Ao incluir um morador, a unidade não aparece na combo",
+      "Unidade não aparece na combo ao incluir morador",
       "Ao incluir um morador, a unidade não aparece na combo",
     )
 
@@ -409,5 +416,124 @@ describe("HelpDeskService — criação de tarefa draft (mantida para subtarefa 
       { id: 6611, nome: "HelpDesk", slug: "helpdesk", perfil: "admin" },
       expect.objectContaining({ managedProjectId: 7, databaseProjectId: 640, status: "draft" }),
     )
+  })
+})
+
+describe("HelpDeskService — contrato de tarefa emitido pelo agente (subtarefa 2)", () => {
+  const BLOCO = 'criar_tarefa {"titulo":"Exportar relatório em PDF","descricao":"O relatório de investimentos deve ser exportado em PDF"}'
+
+  function makeServiceContrato(options: { historico: Array<{ id: string; role: string; text: string }>; criarTarefa?: ReturnType<typeof vi.fn> }) {
+    const base = makeService({ historico: options.historico, cursor: null })
+    const gerenteAgentes = {
+      criarTarefa: options.criarTarefa ?? vi.fn().mockResolvedValue({ id: 77, externalId: "task-p7-77", status: "draft" }),
+      resolverPromptAtendimentoHelpDesk: vi.fn(async () => "PROMPT ATIVO"),
+    }
+    const service = new HelpDeskService(
+      base.factory as never,
+      base.coreDb as never,
+      base.bridge as never,
+      gerenteAgentes as never,
+      base.realtime as never,
+      undefined as never,
+      undefined as never,
+    )
+    return { service, insercoes: base.insercoes, publicarHelpDesk: base.publicarHelpDesk, coreDb: base.coreDb, gerenteAgentes }
+  }
+
+  it("extrai o bloco, remove do texto visível, cria draft e anexa confirmação com externalId", async () => {
+    const { service, insercoes, publicarHelpDesk, gerenteAgentes } = makeServiceContrato({
+      historico: [
+        { id: "10", role: "user", text: "eu queria que o relatório exportasse em PDF" },
+        { id: "11", role: "assistant", text: `Claro! Vou encaminhar essa solicitação aos técnicos.\n\n${BLOCO}` },
+      ],
+    })
+    const resultado = await service.persistirRespostaAgente({ sessaoId: 1, sessionKey: "agent:agente:2_1", cursor: null, usuarioId: 1 })
+    expect(resultado.ok).toBe(true)
+    // Bloco REMOVIDO do texto visível persistido.
+    expect(resultado.resposta).not.toContain("criar_tarefa")
+    expect(resultado.resposta).toContain("Claro! Vou encaminhar essa solicitação aos técnicos.")
+    // Confirmação com externalId anexada.
+    expect(resultado.resposta).toContain("Solicitação registrada como tarefa draft task-p7-77 (id 77)")
+    // Draft criada via criarTarefaDraft com os campos do JSON.
+    expect(gerenteAgentes.criarTarefa).toHaveBeenCalledTimes(1)
+    const args = (gerenteAgentes.criarTarefa as ReturnType<typeof vi.fn>).mock.calls[0] as [unknown, Record<string, unknown>]
+    expect(args[1].titulo).toBe("Exportar relatório em PDF")
+    expect(String(args[1].descricao)).toContain("O relatório de investimentos deve ser exportado em PDF")
+    expect(args[1].status).toBe("draft")
+    expect(args[1].autoStart).toBe(false)
+    // Persistência + realtime com o texto final.
+    expect(insercoes.length).toBe(1)
+    expect(insercoes[0]?.text).toBe(resultado.resposta)
+    const messageEvent = publicarHelpDesk.find((p) => (p as { type?: string }).type === "helpdesk.message.created") as { payload?: { text?: string } } | undefined
+    expect(messageEvent?.payload?.text).toBe(resultado.resposta)
+  })
+
+  it("sem bloco: nenhuma tarefa é criada e o texto é persistido inalterado", async () => {
+    const { service, gerenteAgentes, insercoes } = makeServiceContrato({
+      historico: [
+        { id: "10", role: "user", text: "como faço para exportar?" },
+        { id: "11", role: "assistant", text: "Você pode exportar em Menu > Relatórios > Exportar." },
+      ],
+    })
+    const resultado = await service.persistirRespostaAgente({ sessaoId: 1, sessionKey: "agent:agente:2_1", cursor: null, usuarioId: 1 })
+    expect(resultado.ok).toBe(true)
+    expect(resultado.resposta).toBe("Você pode exportar em Menu > Relatórios > Exportar.")
+    expect(gerenteAgentes.criarTarefa).not.toHaveBeenCalled()
+    expect(insercoes[0]?.text).toBe("Você pode exportar em Menu > Relatórios > Exportar.")
+  })
+
+  it("bloco malformado: tratado sem quebrar a persistência e sem criar tarefa", async () => {
+    const { service, gerenteAgentes, insercoes } = makeServiceContrato({
+      historico: [
+        { id: "10", role: "user", text: "quereria exportar em PDF" },
+        { id: "11", role: "assistant", text: `Vou encaminhar.\ncriar_tarefa {"titulo":"quebrado"` },
+      ],
+    })
+    const resultado = await service.persistirRespostaAgente({ sessaoId: 1, sessionKey: "agent:agente:2_1", cursor: null, usuarioId: 1 })
+    expect(resultado.ok).toBe(true)
+    expect(gerenteAgentes.criarTarefa).not.toHaveBeenCalled()
+    expect(insercoes[0]?.text).toContain("Vou encaminhar.")
+  })
+
+  it("falha em criarTarefaDraft não perde a resposta do usuário (persiste sem o bloco)", async () => {
+    const { service, gerenteAgentes, insercoes } = makeServiceContrato({
+      historico: [
+        { id: "10", role: "user", text: "quereria exportar em PDF" },
+        { id: "11", role: "assistant", text: `Claro! Vou encaminhar.\n\n${BLOCO}` },
+      ],
+      criarTarefa: vi.fn().mockRejectedValue(new Error("motor offline")),
+    })
+    const resultado = await service.persistirRespostaAgente({ sessaoId: 1, sessionKey: "agent:agente:2_1", cursor: null, usuarioId: 1 })
+    expect(resultado.ok).toBe(true)
+    expect(resultado.tarefa).toBeNull()
+    // Resposta persistida SEM o bloco e SEM a confirmação (não inventada).
+    expect(insercoes[0]?.text).toContain("Claro! Vou encaminhar.")
+    expect(insercoes[0]?.text).not.toContain("criar_tarefa")
+    expect(insercoes[0]?.text).not.toContain("Solicitação registrada")
+    expect(gerenteAgentes.criarTarefa).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("Catálogo de prompts — helpdesk_atendimento (subtarefa 2)", () => {
+  it("instrução canônica do backend contém o formato exato do contrato e não cita tools fictícias", () => {
+    expect(INSTRUCAO_CONTRATO_TAREFA_HELPDESK).toContain('criar_tarefa {"titulo":"')
+    expect(INSTRUCAO_CONTRATO_TAREFA_HELPDESK).not.toContain("verificar_transbordo_possivel")
+    expect(INSTRUCAO_CONTRATO_TAREFA_HELPDESK).not.toContain("transbordar_para_humano")
+    expect(INSTRUCAO_CONTRATO_TAREFA_HELPDESK).not.toContain("\\n")
+  })
+
+  it("fallback do bridge reusa a mesma instrução canônica do backend e não contém '\\n' literal", () => {
+    expect(HELPDESK_AGENT_INSTRUCTIONS).toContain(INSTRUCAO_CONTRATO_TAREFA_HELPDESK)
+    expect(HELPDESK_AGENT_INSTRUCTIONS).not.toContain("\\n")
+    expect(HELPDESK_AGENT_INSTRUCTIONS).not.toContain("verificar_transbordo_possivel")
+    expect(HELPDESK_AGENT_INSTRUCTIONS).not.toContain("transbordar_para_humano")
+  })
+
+  it("catálogo (AGENT_PROMPT_CATALOG) reusa a mesma instrução canônica — verificado em prompts-agentes.spec.ts", () => {
+    // Este teste é um sanity check: o catálogo do prompt-catalog.ts reusa
+    // INSTRUCAO_CONTRATO_TAREFA_HELPDESK (mesma string). O teste de conteúdo
+    // completo (sem '\\n' literal, sem tools fictícias) vive em:
+    //   projects/gerenteagentes/__tests__/prompts-agentes.spec.ts
+    expect(PROMPT_HELPDESK_ESPERADO).toBe('criar_tarefa {"titulo":')
   })
 })

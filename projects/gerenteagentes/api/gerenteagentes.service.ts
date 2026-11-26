@@ -891,6 +891,14 @@ export class GerenteAgentesService {
     return entry;
   }
 
+  /** Variação síncrona (para fluxos sem await — listarPrompts). */
+  private catalogEntryStatic(chave: string) {
+    const { AGENT_PROMPT_CATALOG } = require('../src/prompts/prompt-catalog.js') as typeof import('../src/prompts/prompt-catalog.js');
+    const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
+    if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
+    return entry;
+  }
+
   /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
   private async sincronizarCatalogoPrompts() {
     const [{ AGENT_PROMPT_CATALOG }, { OUTPUT_CONTRACT_CATALOG }, { validatePromptTemplate }] = await Promise.all([
@@ -943,6 +951,39 @@ export class GerenteAgentesService {
           });
           await db.update(promptsAgentes).set({ versaoAtivaId: Number(versionInsert[0].insertId), status: 'active' }).where(eq(promptsAgentes.id, Number(inserted[0].insertId)));
         }
+        continue;
+      }
+
+      // Detecção de mudança do texto do catálogo: comparar SOMENTE contra o
+      // conteúdo de catálogo registrado (`prompts_agentes.conteudo`) — nunca
+      // contra edições manuais de outras versões. Quando difere, grava nova
+      // versão em prompts_versoes (com validação) e a ativa; se a validação
+      // falha, preserva a versão ativa anterior (sem sobrescrever).
+      const prompt = existing[0];
+      if (prompt && entry.prompt.trim() && prompt.conteudo !== entry.prompt) {
+        const validation = validatePromptTemplate(
+          entry.prompt,
+          [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])],
+          entry.contractKey ? ['**CONTRATOSAIDA**'] : [],
+        );
+        if (validation.ok) {
+          // Busca a última versão (orderBy desc → primeira linha = maior versao)
+          const allVersoes = await db.select().from(promptsVersoes).where(eq(promptsVersoes.promptId, prompt.id)).orderBy(desc(promptsVersoes.versao));
+          const versao = (allVersoes[0]?.versao ?? 0) + 1;
+          const versionInsert = await db.insert(promptsVersoes).values({
+            promptId: prompt.id,
+            versao,
+            texto: entry.prompt,
+            contratoVersaoId: entry.contractKey ? activeContracts.get(entry.contractKey) : null,
+            motivo: 'Atualização do catálogo embarcado (texto do prompt divergiu)',
+            autor: 'sistema',
+            validacao: validation,
+          });
+          await db
+            .update(promptsAgentes)
+            .set({ conteudo: entry.prompt, versaoAtivaId: Number(versionInsert[0].insertId), status: 'active', updatedAt: new Date() })
+            .where(eq(promptsAgentes.id, prompt.id));
+        }
       }
       for (const marker of entry.markers) {
         const found = await db.select().from(promptsMascaras).where(eq(promptsMascaras.nome, marker)).limit(1);
@@ -973,7 +1014,7 @@ export class GerenteAgentesService {
     const contractVersions = await db.select().from(promptsContratosVersoes).orderBy(desc(promptsContratosVersoes.createdAt));
     return {
       prompts: await Promise.all(prompts.map(async (prompt) => {
-        const entry = await this.catalogEntry(prompt.chave);
+        const entry = this.catalogEntryStatic(prompt.chave);
         return {
           ...prompt,
           allowedMarkers: [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])],
@@ -1184,7 +1225,7 @@ export class GerenteAgentesService {
     }
 
     if (input.status != null && input.status !== 'planned' && input.status !== 'draft') {
-      throw new BadRequestException('Status inicial deve ser planned');
+      throw new BadRequestException('Status inicial deve ser planned ou draft');
     }
     const dependencyIds = input.dependsOnTaskIds ??
       (input.dependsOnTaskId == null ? [] : [input.dependsOnTaskId]);
@@ -1243,7 +1284,7 @@ export class GerenteAgentesService {
           taskId: externalId,
           taskDatabaseId: tarefaId,
           managedProjectId,
-          status: 'planned',
+          status: 'draft',
           paused: true,
         },
         timestamp: new Date(),
