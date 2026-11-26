@@ -19,7 +19,7 @@ interface StubCall {
 
 interface RouteHandler {
   predicate?: (call: StubCall) => boolean
-  respond: () => { status: number; body: unknown }
+  respond: (call?: StubCall) => { status: number; body: unknown }
   once?: boolean
   calls?: number
 }
@@ -59,8 +59,8 @@ function renderLogin(routes: RouteHandler[]): void {
     }
     rota.calls = (rota.calls ?? 0) + 1
     return {
-      status: rota.respond().status,
-      json: () => Promise.resolve(rota.respond().body),
+      status: rota.respond(call).status,
+      json: () => Promise.resolve(rota.respond(call).body),
     }
   })
 
@@ -236,5 +236,128 @@ describe("AuthPanel login flow", () => {
       expect(sessionState.projetoSlug).toBe("projeto-unico")
     })
     localStorage.removeItem("bg.refreshToken")
+  })
+
+  it("fluxo código: POST /auth/verify-code carrega consentimentoAceito e erros chegam à UI", async () => {
+    const user = userEvent.setup()
+    let verifyBody: unknown = null
+    const routes: RouteHandler[] = [
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/request-code"),
+        respond: () => ({ status: 200, body: { ok: true } }),
+      },
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/verify-code"),
+        once: true,
+        respond: (call) => {
+          verifyBody = call ? JSON.parse((call.init as { body?: string }).body ?? "{}") : null
+          return {
+            status: 200,
+            body: {
+              primeiraVez: false,
+              refreshToken: "refresh-ok",
+              usuario,
+              projetos: [
+                {
+                  id: 1,
+                  nome: "Projeto 1",
+                  slug: "biblioteca-global",
+                  perfil: "admin",
+                },
+              ],
+            },
+          }
+        },
+      },
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/select-project"),
+        respond: () => ({
+          status: 200,
+          body: {
+            accessToken:
+              "eyJhbGciOiJIUzI1NiJ9." +
+              btoa(
+                JSON.stringify({
+                  sub: 1,
+                  projetoId: 1,
+                  perfil: "admin",
+                  exp: 1_900_000,
+                }),
+              ) +
+              ".sig",
+            projeto: {
+              id: 1,
+              nome: "Projeto 1",
+              slug: "biblioteca-global",
+              perfil: "admin",
+            },
+          },
+        }),
+      },
+    ]
+    renderLogin(routes)
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(
+      screen.getByLabelText(/E-mail\b/),
+      "gabriel@globaltecnologia.net",
+    )
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+    await waitFor(() => {
+      expect(screen.getByTestId("code-input")).toBeInTheDocument()
+    })
+    await user.type(screen.getByTestId("code-input"), "123456")
+    await user.click(screen.getByLabelText(/Li e concordo com a Política de Privacidade/))
+    await user.click(screen.getByRole("button", { name: "Entrar" }))
+    await waitFor(() => {
+      expect(sessionState.status).toBe("authenticated")
+    })
+    // POST /auth/verify-code deve ter consentimentoAceito: true no corpo
+    expect((verifyBody as { consentimentoAceito?: boolean })?.consentimentoAceito).toBe(true)
+  })
+
+  it("fluxo código: erro 400 de consentimento aparece como mensagem própria (não 'código inválido')", async () => {
+    const user = userEvent.setup()
+    const routes: RouteHandler[] = [
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/request-code"),
+        respond: () => ({ status: 200, body: { ok: true } }),
+      },
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/verify-code"),
+        respond: () => ({
+          status: 400,
+          body: {
+            code: "CONSENTIMENT_REQUERIDO",
+            message: "É necessário aceitar a Política de Privacidade para entrar",
+          },
+        }),
+      },
+    ]
+    renderLogin(routes)
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(
+      screen.getByLabelText(/E-mail\b/),
+      "gabriel@globaltecnologia.net",
+    )
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+    await waitFor(() => {
+      expect(screen.getByTestId("code-input")).toBeInTheDocument()
+    })
+    await user.type(screen.getByTestId("code-input"), "123456")
+    await user.click(screen.getByLabelText(/Li e concordo com a Política de Privacidade/))
+    await user.click(screen.getByRole("button", { name: "Entrar" }))
+    await waitFor(() => {
+      // A mensagem real da API deve aparecer — não "código inválido" nem sucesso
+      expect(
+        screen.queryByText(
+          /É necessário aceitar a Política de Privacidade/i,
+        ),
+      ).toBeInTheDocument()
+      // Não deve exibir "Código inválido" nem "Login realizado com sucesso"
+      expect(screen.queryByText(/Código inválido/i)).not.toBeInTheDocument()
+      expect(
+        screen.queryByText(/Login realizado com sucesso/i),
+      ).not.toBeInTheDocument()
+    })
   })
 })

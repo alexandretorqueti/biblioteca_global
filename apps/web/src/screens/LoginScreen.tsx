@@ -89,19 +89,15 @@ export default function LoginScreen(): ReactNode {
   const handleVerifyCode = async (
     email: string,
     code: string,
+    consentimentoAceito?: boolean,
   ): Promise<{ primeiraVez: boolean; verificationToken?: string }> => {
     setErro(null)
-    try {
-      const resultado = await verifyCode(email, code)
-      if (resultado.primeiraVez) {
-        return { primeiraVez: true, verificationToken: resultado.verificationToken }
-      }
-      // Login completo já aplicado pelo AuthContext.
-      return { primeiraVez: false }
-    } catch {
-      // Código inválido/expirado: o próprio AuthPanel exibe o erro no modo código.
-      return { primeiraVez: false }
+    const resultado = await verifyCode(email, code, consentimentoAceito)
+    if (resultado.primeiraVez) {
+      return { primeiraVez: true, verificationToken: resultado.verificationToken }
     }
+    // Login completo já aplicado pelo AuthContext.
+    return { primeiraVez: false }
   }
 
   const handleSetPassword = async (
