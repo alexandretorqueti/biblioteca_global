@@ -1,0 +1,1 @@
+ALTER TABLE `helpdesk_sessoes` ADD `ultimo_console_message_id` varchar(191);

@@ -13,11 +13,10 @@ import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/ap
 const DEFAULT_TIMEOUT = 10_000
 
 /**
- * Regras do agente no atendimento ao usuário final.
- *
- * O BFF não possui um campo de system prompt no endpoint de chat. Por isso,
- * Estas instruções são enviadas somente no POST de provisionamento da sessão.
- * O histórico remoto permanece como fonte do contexto das mensagens seguintes.
+ * Instruções de atendimento usadas como PREFIXO da primeira mensagem do
+ * usuário quando nenhum prompt persistido está disponível (fallback).
+ * O BFF não possui campo de system prompt no endpoint de chat: as
+ * instruções viajam no próprio texto da primeira mensagem da sessão.
  */
 export const HELPDESK_AGENT_INSTRUCTIONS = [
   "Você é o agente de atendimento do HelpDesk do sistema.",
@@ -31,9 +30,26 @@ export const HELPDESK_AGENT_INSTRUCTIONS = [
   "6. Seja claro quando estiver apenas respondendo uma dúvida e quando estiver encaminhando uma solicitação.",
   "7. A aplicação HelpDesk cria automaticamente a tarefa draft. Você não possui ferramenta, token ou autorização para executar alterações.",
   "8. Não invente que chamou uma ferramenta e não tente executar a alteração por comandos, banco ou APIs do sistema.",
-  "9. Quando o cliente pedir atendente humano ou o assunto exigir intervenção humana, use a tool verificar_transbordo_possivel antes de prometer o encaminhamento.",
-  "10. Se a tool confirmar disponibilidade, use transbordar_para_humano informando assunto, informações coletadas e pendência; depois comunique ao cliente que um humano dará sequência.",
+  "9. Quando o cliente pedir atendente humano ou o assunto exigir intervenção humana, sinalize claramente no texto que o atendimento humano está sendo solicitado e não prometa prazo sem confirmação do sistema.",
+  "10. O encaminhamento ao atendente humano é acionado pelo próprio sistema (fluxo server-side); você apenas registra no texto o assunto e a pendência do cliente.",
 ].join("\n")
+
+/** Marcador literal do BFF para turnos sem saída textual. */
+export const RESPOSTA_INVALIDA = "(no output)"
+
+/** true quando o texto é vazio ou o marcador literal "(no output)" — nunca pode virar resposta do agente. */
+export function ehRespostaInvalida(texto: unknown): boolean {
+  if (typeof texto !== "string") return true
+  const t = texto.trim()
+  return t.length === 0 || t === RESPOSTA_INVALIDA
+}
+
+/** Mensagens do console com identidade e role FIEL (sem remapeio de role desconhecido). */
+export interface ConsoleMessage {
+  id: string
+  role: "assistant" | "user" | "system" | string
+  text: string
+}
 
 function bffFetch(
   baseUrl: string,
@@ -138,16 +154,14 @@ export class HelpDeskBridgeService {
 
     try {
       const existing = await this.sessaoJaExiste(key)
-      const existingPrompt = existing ? null : await this.resolverPromptAtendimento()
       const res = await bffFetch(this.baseUrl, this.token, "/api/sessions", {
         method: "POST",
         body: {
           key,
           agentId: input.agenteId,
           label: `helpdesk:${input.projetoId}:${input.usuarioId}`,
-          // O BFF preserva o prompt no provisionamento. Não o reenviamos ao
-          // retomar uma sessão, pois isso duplicaria a instrução a cada fala.
-          ...(existingPrompt ? { task: existingPrompt.text } : {}),
+          // O prompt de atendimento NUNCA viaja no provisionamento: ele é
+          // prefixado na primeira mensagem do usuário pelo service.
           ...(input.model ? { model: input.model } : {}),
         },
       })
@@ -155,9 +169,6 @@ export class HelpDeskBridgeService {
       if (res.ok) {
         const data = await res.json() as BffSessionResult
         const sessionExisting = existing || Boolean(data.existing)
-        // A API do BFF recebe a instrução somente na criação. Em instalações
-        // que aceitam atualização no mesmo POST, removemos a chave ao retomar
-        // para preservar a semântica de início único.
         return {
           sessionKey: data.key ?? key,
           existing: sessionExisting,
@@ -183,14 +194,21 @@ export class HelpDeskBridgeService {
     }
   }
 
-  private async resolverPromptAtendimento(): Promise<{ text: string }> {
+  async resolverPromptAtendimento(): Promise<string> {
     try {
       const text = await this.gerenteAgentes?.resolverPromptAtendimentoHelpDesk()
-      if (text) return { text }
+      if (text) return text
     } catch (error) {
       this.logger.warn(`Prompt HelpDesk persistido indisponível: ${error}`)
     }
-    return { text: HELPDESK_AGENT_INSTRUCTIONS }
+    return HELPDESK_AGENT_INSTRUCTIONS
+  }
+
+  /** Monta o texto de envio: na 1ª mensagem, prefixa as instruções de atendimento. */
+  prefixarInstrucoes(instrucoes: string | undefined, textoUsuario: string, primeiraMensagem: boolean): string {
+    const instrucoesLimpas = (instrucoes ?? "").trim()
+    if (!primeiraMensagem || !instrucoesLimpas) return textoUsuario
+    return `[INSTRUÇÕES DE ATENDIMENTO]\n${instrucoesLimpas}\n\n${textoUsuario}`
   }
 
   /**
@@ -201,6 +219,7 @@ export class HelpDeskBridgeService {
     sessionKey: string
     text: string
     modelChain: Array<{ modelo: string }>
+    cursor?: string | null
   }): Promise<BridgeSendResult> {
     for (const entry of input.modelChain) {
       try {
@@ -221,8 +240,8 @@ export class HelpDeskBridgeService {
         if (res.ok) {
           const data = await res.json() as Record<string, unknown>
           const runId = typeof data.runId === "string" ? data.runId : undefined
-          const responseText = await this.aguardarResposta(input.sessionKey, input.text)
-          if (!responseText) {
+          const responseText = await this.aguardarResposta(input.sessionKey, input.cursor ?? null)
+          if (responseText === undefined) {
             this.logger.warn(`Execução ${runId ?? "sem-id"} ainda está sem resposta textual`)
             return { ok: true, runId, processing: true, retryable: true }
           }
@@ -247,11 +266,6 @@ export class HelpDeskBridgeService {
     return { ok: false, retryable: false }
   }
 
-  async obterResposta(sessionKey: string, userText: string): Promise<string | undefined> {
-    const history = await this.getHistory({ sessionKey, limit: 100 })
-    return this.encontrarResposta(history, userText)
-  }
-
   async sessaoEmProcessamento(sessionKey: string): Promise<boolean> {
     try {
       const query = new URLSearchParams({ key: sessionKey })
@@ -266,14 +280,15 @@ export class HelpDeskBridgeService {
 
   /**
    * `chat.send` retorna somente o runId. A resposta textual chega depois no
-   * histórico da sessão, portanto aguardamos o assistant após a mensagem atual.
+   * histórico da sessão, portanto aguardamos a primeira `assistant` com id
+   * maior que o cursor (correlação determinística).
    */
-  private async aguardarResposta(sessionKey: string, userText: string): Promise<string | undefined> {
+  private async aguardarResposta(sessionKey: string, cursor: string | null): Promise<string | undefined> {
     const deadline = Date.now() + 30_000
 
     while (Date.now() < deadline) {
-      const response = await this.obterResposta(sessionKey, userText)
-      if (response) return response
+      const response = await this.obterRespostaPorCursor(sessionKey, cursor)
+      if (response !== undefined) return response
 
       await new Promise<void>((resolve) => setTimeout(resolve, 500))
     }
@@ -281,37 +296,16 @@ export class HelpDeskBridgeService {
     return undefined
   }
 
-  private encontrarResposta(
-    history: Array<{ role: "agent" | "user" | "system"; text: string | null }>,
-    userText: string,
-  ): string | undefined {
-    let userIndex = -1
-    for (let i = history.length - 1; i >= 0; i -= 1) {
-      const historyText = history[i]?.text?.trim()
-      const expectedText = userText.trim()
-      if (
-        history[i]?.role === "user"
-        && (historyText === expectedText || historyText?.endsWith(`\n${expectedText}`))
-      ) {
-        userIndex = i
-        break
-      }
-    }
-
-    const inicio = userIndex >= 0 ? userIndex + 1 : Math.max(0, history.length - 1)
-    for (let i = history.length - 1; i >= inicio; i -= 1) {
-      const message = history[i]
-      if (message?.role === "agent" && message.text?.trim()) return message.text.trim()
-    }
-    return undefined
-  }
-
-  /** Busca histórico de mensagens via BFF. */
+  /**
+   * Busca histórico de mensagens via BFF. Retorna id e role FIEL de cada
+   * mensagem (assistant/user/system/qualquer outro) — role desconhecido NÃO
+   * é mapeado para "agent".
+   */
   async getHistory(input: {
     sessionKey: string
     limit?: number
     offset?: number
-  }): Promise<Array<{ role: "agent" | "user" | "system"; text: string | null }>> {
+  }): Promise<ConsoleMessage[]> {
     const query = new URLSearchParams({ sessionKey: input.sessionKey })
     if (input.limit != null) query.set("limit", String(input.limit))
     if (input.offset != null) query.set("offset", String(input.offset))
@@ -324,14 +318,12 @@ export class HelpDeskBridgeService {
       if (res.ok) {
         const data = await res.json()
         const arr = Array.isArray(data) ? data : ((data as Record<string, unknown>).messages ?? []) as Array<Record<string, unknown>>
-        const mapped: Array<{ role: "agent" | "user" | "system"; text: string | null }> = []
+        const mapped: ConsoleMessage[] = []
         for (const m of arr) {
-          const text = m.content ?? m.text ?? ""
-          let role: "agent" | "user" | "system" = "agent"
-          if (m.role === "assistant") role = "agent"
-          else if (m.role === "user") role = "user"
-          else if (m.role === "system") role = "system"
-          mapped.push({ role, text })
+          const text = typeof m.content === "string" ? m.content : typeof m.text === "string" ? m.text : ""
+          const role = typeof m.role === "string" ? m.role : ""
+          const id = typeof m.id === "string" ? m.id : typeof m.runId === "string" ? m.runId : ""
+          mapped.push({ id, role, text })
         }
         return mapped
       }
@@ -340,6 +332,37 @@ export class HelpDeskBridgeService {
       this.logger.warn(`history failed: ${err}`)
     }
     return []
+  }
+
+  /**
+   * Correlação determinística: primeira mensagem `assistant` do histórico
+   * com id MAIOR que o cursor informado. Sem match, sem id ou com texto
+   * inválido → undefined (NUNCA o fallback "última mensagem").
+   */
+  async obterRespostaPorCursor(sessionKey: string, cursor: string | null | undefined): Promise<string | undefined> {
+    const history = await this.getHistory({ sessionKey, limit: 100 })
+    const cursorId = (cursor ?? "").trim()
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const message = history[i]
+      if (!message) continue
+      if (message.role !== "assistant") continue
+      if (!message.id) continue
+      if (cursorId && message.id <= cursorId) continue
+      const text = message.text.trim()
+      if (ehRespostaInvalida(text)) continue
+      return text
+    }
+    return undefined
+  }
+
+  /**
+   * Verifica se o histórico do console ainda não contém nenhuma mensagem de
+   * usuário — usado para detectar a PRIMEIRA mensagem da sessão quando o
+   * cursor persistido está vazio.
+   */
+  async temMensagensDeUsuario(sessionKey: string): Promise<boolean> {
+    const history = await this.getHistory({ sessionKey, limit: 100 })
+    return history.some((m) => m.role === "user" && m.text.trim().length > 0)
   }
 
   /** Aborta uma sessão ativa no BFF. */

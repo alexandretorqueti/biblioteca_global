@@ -385,6 +385,7 @@ export const helpdeskSessoes = mysqlTable(
       .references(() => projetos.id, { onDelete: "cascade" }),
     agenteId: varchar("agente_id", { length: 100 }).notNull(),
     status: mysqlEnum("status", ["active", "closed"]).notNull().default("active"),
+    ultimoConsoleMessageId: varchar("ultimo_console_message_id", { length: 191 }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
