@@ -275,7 +275,7 @@ function AuthDemo() {
             config={projectConfig}
             required
             helperText="Digite para pesquisar. O componente gerencia opções e estados automaticamente."
-            onChange={(_name, value) => setSelectedProjectId(value)}
+            onChange={(_name, value) => setSelectedProjectId(Array.isArray(value) ? (value[0] ?? "") : value)}
           />
           <Stack direction="row" spacing={2} mt={3}>
             <Button variant="contained" disabled={!selectedProjectId} onClick={handleEnterProject}>

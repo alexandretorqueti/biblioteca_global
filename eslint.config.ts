@@ -16,6 +16,10 @@ export default tseslint.config(
       'biblioteca_old/**',
       // Diretório de deploy — tem tsconfig próprio, não deve ser lintado.
       'wt-deploy/**',
+      // Worktrees locais do motor — já ignorados no git; varredura do eslint
+      // neles gera parsing errors 'multiple candidate TSConfigRootDirs'.
+      '.motor-v3-worktrees/**',
+      'wt-motor-p0/**',
     ],
   },
   js.configs.recommended,

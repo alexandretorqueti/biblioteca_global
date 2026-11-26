@@ -10,6 +10,8 @@ describe('GerenteAgentesController — criação de tarefa', () => {
     const instance = new GerenteAgentesController(
       { criarTarefa } as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
     return { instance, criarTarefa };
   }
@@ -51,6 +53,7 @@ describe('GerenteAgentesController — configurações do motor', () => {
       { obterEstadoMotor, pausarTodasTarefas, retomarTodasTarefas } as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await expect(instance.obterEstadoMotor()).resolves.toEqual({ active: true });
@@ -63,7 +66,7 @@ describe('GerenteAgentesController — configurações do motor', () => {
 
   it('lista configurações pelo contrato protegido de leitura', async () => {
     const listarConfiguracoesMotor = vi.fn().mockResolvedValue([{ chave: 'motor.max_workers', editavel: true }]);
-    const instance = new GerenteAgentesController({ listarConfiguracoesMotor } as never, {} as never);
+    const instance = new GerenteAgentesController({ listarConfiguracoesMotor } as never, {} as never, {} as never, {} as never);
 
     await expect(instance.listarConfiguracoes()).resolves.toEqual([{ chave: 'motor.max_workers', editavel: true }]);
     expect(listarConfiguracoesMotor).toHaveBeenCalledOnce();
@@ -71,7 +74,7 @@ describe('GerenteAgentesController — configurações do motor', () => {
 
   it('encaminha o mapa de valores para persistência validada', async () => {
     const atualizarConfiguracoesMotor = vi.fn().mockResolvedValue([]);
-    const instance = new GerenteAgentesController({ atualizarConfiguracoesMotor } as never, {} as never);
+    const instance = new GerenteAgentesController({ atualizarConfiguracoesMotor } as never, {} as never, {} as never, {} as never);
 
     await instance.atualizarConfiguracoes({ valores: { 'motor.max_workers': 3 } });
 
@@ -87,7 +90,7 @@ describe('GerenteAgentesController — configurações do motor', () => {
       },
     };
     const atualizarConfiguracoesMotor = vi.fn().mockRejectedValue(erro);
-    const instance = new GerenteAgentesController({ atualizarConfiguracoesMotor } as never, {} as never);
+    const instance = new GerenteAgentesController({ atualizarConfiguracoesMotor } as never, {} as never, {} as never, {} as never);
 
     await expect(instance.atualizarConfiguracoes({ valores: { 'motor.max_workers': 0 } })).rejects.toMatchObject(erro);
   });

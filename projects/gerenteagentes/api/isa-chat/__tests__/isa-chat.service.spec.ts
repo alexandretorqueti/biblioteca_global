@@ -537,7 +537,7 @@ describe("IsaChatService", () => {
         const result = await service.finalizeOnboarding("42")
 
         expect(result.ok).toBe(true)
-        const chamada = vi.mocked(mockDb.values).mock.calls.find(
+        const chamada = vi.mocked(mockDb.values as ReturnType<typeof vi.fn>).mock.calls.find(
           (c) => typeof c[0] === "object" && c[0] !== null && "especificacao" in (c[0] as object),
         )
         expect(chamada).toBeDefined()
@@ -559,7 +559,7 @@ describe("IsaChatService", () => {
         const resultado = await service.finalizeOnboarding("42", "Resumo", "documento incompleto")
 
         expect(resultado.ok).toBe(true)
-        const chamada = vi.mocked(mockDb.values).mock.calls.find(
+        const chamada = vi.mocked(mockDb.values as ReturnType<typeof vi.fn>).mock.calls.find(
           (c) => typeof c[0] === "object" && c[0] !== null && "especificacao" in (c[0] as object),
         )
         const gravado = chamada![0] as { especificacao: string }
