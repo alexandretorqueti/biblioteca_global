@@ -108,6 +108,7 @@ interface AuthPanelProps {
   onVerifyCode?: (
     email: string,
     code: string,
+    consentimentoAceito?: boolean,
   ) => Promise<VerifyCodeResult> | void
   /** Define a senha na 1ª vez (verificationToken do verify-code). */
   onSetPassword?: (
@@ -194,6 +195,7 @@ export default function AuthPanel({
   const [confirmacaoSenha, setConfirmacaoSenha] = useState("")
   const [erroCode, setErroCode] = useState("")
   const [codeEnviado, setCodeEnviado] = useState(false)
+  const [codeConsentimento, setCodeConsentimento] = useState(false)
 
   const updateLogin = (name: string, value: string | boolean) => {
     setSuccessMessage("")
@@ -261,7 +263,7 @@ export default function AuthPanel({
     setIsLoading(true)
     setErroCode("")
     try {
-      const resultado = await onVerifyCode?.(codeEmail, code)
+      const resultado = await onVerifyCode?.(codeEmail, code, codeConsentimento)
       if (resultado?.primeiraVez && resultado.verificationToken) {
         setVerificationToken(resultado.verificationToken)
         setSuccessMessage("")
@@ -269,8 +271,18 @@ export default function AuthPanel({
       } else {
         setSuccessMessage("Login realizado com sucesso.")
       }
-    } catch {
-      setErroCode("Código inválido ou expirado.")
+    } catch (erro) {
+      // Distinção: 400 = mensagem real da API (ex.: aceitar a Política);
+      // demais = erro genérico de código. (duck-typing — pacote é HTTP-free)
+      const httpStatus =
+        typeof erro === "object" && erro !== null && "status" in erro
+          ? (erro as { status?: unknown }).status
+          : undefined
+      if (httpStatus === 400 && erro instanceof Error && erro.message) {
+        setErroCode(erro.message)
+      } else {
+        setErroCode("Código inválido ou expirado.")
+      }
     } finally {
       setIsLoading(false)
     }
@@ -596,11 +608,35 @@ export default function AuthPanel({
                         setSuccessMessage("")
                       }}
                     />
+                    {config.requirePrivacyConsent && (
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={codeConsentimento}
+                            onChange={(event) =>
+                              setCodeConsentimento(event.target.checked)
+                            }
+                          />
+                        }
+                        label={
+                          <span>
+                            Li e concordo com a{" "}
+                            <Link href="/politica-privacidade" target="_blank" rel="noreferrer">
+                              Política de Privacidade
+                            </Link>
+                          </span>
+                        }
+                      />
+                    )}
                     <Button
                       type="submit"
                       variant="contained"
                       size="large"
-                      disabled={isLoading || code.length !== 6}
+                      disabled={
+                        isLoading ||
+                        code.length !== 6 ||
+                        (config.requirePrivacyConsent && !codeConsentimento)
+                      }
                     >
                       {isLoading ? "Entrando..." : "Entrar"}
                     </Button>
