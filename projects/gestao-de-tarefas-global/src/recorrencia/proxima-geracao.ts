@@ -26,7 +26,7 @@ import type { RegraRecorrencia } from "./tipos"
 
 /** Desfaz "YYYY-MM-DD" → `Date` à meia-noite LOCAL. */
 function parseDataLocal(iso: string): Date {
-  const [ano, mes, dia] = iso.split("-").map(Number)
+  const [ano = 1970, mes = 1, dia = 1] = iso.split("-").map(Number)
   return new Date(ano, mes - 1, dia)
 }
 

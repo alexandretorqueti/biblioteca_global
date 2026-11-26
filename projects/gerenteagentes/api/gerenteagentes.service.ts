@@ -885,7 +885,7 @@ export class GerenteAgentesService {
   }
 
   private async catalogEntry(chave: string) {
-    const { AGENT_PROMPT_CATALOG } = await import('../src/prompts/prompt-catalog');
+    const { AGENT_PROMPT_CATALOG } = await import('../src/prompts/prompt-catalog.js');
     const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
     if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
     return entry;
@@ -894,9 +894,9 @@ export class GerenteAgentesService {
   /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
   private async sincronizarCatalogoPrompts() {
     const [{ AGENT_PROMPT_CATALOG }, { OUTPUT_CONTRACT_CATALOG }, { validatePromptTemplate }] = await Promise.all([
-      import('../src/prompts/prompt-catalog'),
-      import('../src/prompts/output-contract-catalog'),
-      import('../src/prompts/PromptTemplateEngine'),
+      import('../src/prompts/prompt-catalog.js'),
+      import('../src/prompts/output-contract-catalog.js'),
+      import('../src/prompts/PromptTemplateEngine.js'),
     ]);
     const db = await this.dbDoMotor();
     const activeContracts = new Map<string, number>();
@@ -1006,7 +1006,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine');
+    const { validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine.js');
     const allowed = [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])];
     const validation = validatePromptTemplate(texto, allowed, entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
@@ -1024,7 +1024,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine');
+    const { validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine.js');
     const validation = validatePromptTemplate(version.texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (entry.contractKey && !version.contratoVersaoId) throw new BadRequestException('Selecione uma versão de contrato para publicar este prompt');
     if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
@@ -1056,8 +1056,8 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine');
-    const { composeDevelopmentPrompt } = await import('../src/prompts/PromptComposition');
+    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine.js');
+    const { composeDevelopmentPrompt } = await import('../src/prompts/PromptComposition.js');
     const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) return { validation, rendered: null };
     let contractInstructions = '';
@@ -4736,19 +4736,18 @@ export class GerenteAgentesService {
    * incluindo evidência completa (branches, commits, arquivos com excerpts).
    */
   async getPromotionConflictAnalysis(projeto: ProjetoResumo, tarefaId: number) {
-    const db = this.dbForProject(projeto);
+    const db = await this.dbDoProjeto(projeto);
     const [rows] = await db.execute(
-      `SELECT p.id, p.status, p.confidence, p.recommendation, p.report, p.error_message,
+      sql`SELECT p.id, p.status, p.confidence, p.recommendation, p.report, p.error_message,
               p.base_branch, p.task_branch, p.base_commit, p.task_commit, p.merge_base_commit,
               p.conflict_files_json, p.evidence_json, p.attempts, p.created_at, p.updated_at
          FROM promotion_conflict_analyses p
          INNER JOIN tarefas t ON t.id = p.tarefa_id
-        WHERE t.id = ?
+        WHERE t.id = ${tarefaId}
         ORDER BY p.created_at DESC
         LIMIT 1`,
-      [tarefaId]
     );
-    const row = (rows as any[])[0];
+    const row = (rows as unknown as any[])[0];
     if (!row) return null;
 
     // Parse evidence_json para extrair dados estruturados
@@ -4800,19 +4799,18 @@ export class GerenteAgentesService {
       throw new BadRequestException('resolutions é obrigatório e deve ser um array não vazio');
     }
 
-    const db = this.dbForProject(projeto);
+    const db = await this.dbDoProjeto(projeto);
     
     // Buscar a análise mais recente
     const [rows] = await db.execute(
-      `SELECT p.id, p.evidence_json
+      sql`SELECT p.id, p.evidence_json
          FROM promotion_conflict_analyses p
          INNER JOIN tarefas t ON t.id = p.tarefa_id
-        WHERE t.id = ?
+        WHERE t.id = ${tarefaId}
         ORDER BY p.created_at DESC
         LIMIT 1`,
-      [tarefaId]
     );
-    const row = (rows as any[])[0];
+    const row = (rows as unknown as any[])[0];
     if (!row) {
       throw new NotFoundException('Nenhuma análise de conflito encontrada para esta tarefa');
     }
@@ -4836,10 +4834,9 @@ export class GerenteAgentesService {
     };
 
     await db.execute(
-      `UPDATE promotion_conflict_analyses
-          SET evidence_json = ?, status = 'resolved', updated_at = NOW()
-        WHERE id = ?`,
-      [JSON.stringify(updatedEvidence), row.id]
+      sql`UPDATE promotion_conflict_analyses
+          SET evidence_json = ${JSON.stringify(updatedEvidence)}, status = 'resolved', updated_at = NOW()
+        WHERE id = ${row.id}`,
     );
 
     return {

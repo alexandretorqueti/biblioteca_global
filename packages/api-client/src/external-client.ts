@@ -5,7 +5,6 @@
  * Usa um token externo fornecido explicitamente ou auth "none".
  * Suporta pathTemplate com interpolação de parênteses (:id → valor).
  */
-import { ApiClientError } from "./errors"
 import type { FetchFn } from "./types"
 
 /** Erro padronizado de cliente externo. */
