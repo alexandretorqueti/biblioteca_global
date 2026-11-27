@@ -79,6 +79,7 @@ describe("registry de telas custom", () => {
       "gerenteagentes-test-history",
       "gerenteagentes-relatorios-modelos",
       "gerenteagentes-configuracoes",
+      "gestao-de-tarefas-global-visoes",
       "gestao-de-tarefas-global-tarefa-fluxo",
       "sistema-adm-global-dashboard",
       "sistema-adm-global-hub-administrativo",

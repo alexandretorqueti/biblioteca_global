@@ -77,7 +77,11 @@ export interface AuthContextValue extends AuthSession {
   /** Pede um código por e-mail (resposta sempre ok — não revela conta). */
   requestCode: (email: string) => Promise<void>
   /** Valida o código; 1ª vez devolve o token efêmero p/ definir senha. */
-  verifyCode: (email: string, code: string) => Promise<{
+  verifyCode: (
+    email: string,
+    code: string,
+    consentimentoAceito?: boolean,
+  ) => Promise<{
     primeiraVez: boolean
     verificationToken?: string
   }>
@@ -336,11 +340,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const verifyCode = useCallback(
-    async (email: string, code: string): Promise<{
+    async (
+      email: string,
+      code: string,
+      consentimentoAceito?: boolean,
+    ): Promise<{
       primeiraVez: boolean
       verificationToken?: string
     }> => {
-      const parsed = verifyCodeRequestSchema.safeParse({ email, code })
+      const parsed = verifyCodeRequestSchema.safeParse({
+        email,
+        code,
+        consentimentoAceito,
+      })
       if (!parsed.success) {
         throw new ApiClientError(400, "VALIDATION", "Código inválido")
       }

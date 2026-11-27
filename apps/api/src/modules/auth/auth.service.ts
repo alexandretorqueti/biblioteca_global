@@ -157,7 +157,6 @@ export class AuthService {
       }
       throw new UnauthorizedException(CODIGO_INVALIDO)
     }
-    await this.repo.markVerificationUsed(linha.id)
 
     const usuario = await this.repo.findUsuarioByIdentifier("email", email)
     if (!usuario || !usuario.ativo) {
@@ -165,6 +164,10 @@ export class AuthService {
     }
 
     await this.validarConsentimento(usuario, dto.consentimentoAceito, ip)
+
+    // Marcar como usado SÓ após o aceite: falha de consentimento não deve
+    // queimar o código — o usuário reenvia validando o mesmo código.
+    await this.repo.markVerificationUsed(linha.id)
 
     if (!usuario.passwordHash) {
       await this.repo.registrarLogLogin({

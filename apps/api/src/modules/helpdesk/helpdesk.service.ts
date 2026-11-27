@@ -17,15 +17,29 @@ import { RealtimeService } from "../realtime/realtime.service"
 import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/api/gerenteagentes.service"
 import { TransbordoNotifier, type TransbordoResumo } from "../transbordo/transbordo.notifier"
 import { TransbordoService } from "../transbordo/transbordo.service"
+import { ehRespostaInvalida } from "./helpdesk.bridge"
+import {
+  extrairContratoTarefa,
+  textoConfirmacaoTarefa,
+} from "./helpdesk-tarefa-contrato"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable, projetos: projectTable, usuarios: userTable } = coreSchema
 /** O catálogo de agentes/modelos do GerenteAgentes vive em projeto_640. */
 const GERENTE_AGENTES_PROJECT_ID = 640
 
+/** Intervalo do reconciler server-side (ms). */
+const RECONCILER_INTERVAL_MS = 5_000
+/** Teto do reconciler server-side (ms). */
+const RECONCILER_TETO_MS = 5 * 60_000
+/** Intervalo do reconciler em testes fake (controlado via injetão nos tests). */
+export const RECONCILER_DEFAULTS = { intervalMs: RECONCILER_INTERVAL_MS, tetoMs: RECONCILER_TETO_MS }
+
 @Injectable()
 export class HelpDeskService {
   private readonly logger = new Logger(HelpDeskService.name)
   private readonly defaultAgentId = "biblioteca-global"
+  /** Guarda contra reconcilers duplicados por sessão. */
+  private readonly reconcilersAtivos = new Set<number>()
 
   constructor(
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
@@ -35,7 +49,9 @@ export class HelpDeskService {
     @Optional() private readonly realtime?: RealtimeService,
     @Optional() private readonly transbordo?: TransbordoService,
     @Optional() private readonly transbordoNotifier?: TransbordoNotifier,
+    @Optional() reconcilerConfig?: { intervalMs: number; tetoMs: number },
   ) {
+    this._reconcilerConfig = reconcilerConfig
     this.realtime?.setHelpDeskSnapshotProvider(async ({ sessionId, userId, projectId }) => {
       const history = await this.obterHistorico(sessionId, userId)
       if (history.sessao.usuarioId !== userId || history.sessao.projetoId !== projectId) return null
@@ -50,6 +66,11 @@ export class HelpDeskService {
 
   private async getCoreDb(): Promise<CoreDb> {
     return this.coreDb
+  }
+
+  private _reconcilerConfig?: { intervalMs: number; tetoMs: number }
+  private get reconcilerConfigValue(): { intervalMs: number; tetoMs: number } {
+    return this._reconcilerConfig ?? RECONCILER_DEFAULTS
   }
 
   // ===========================================================================
@@ -162,10 +183,6 @@ export class HelpDeskService {
     }).$returningId()
     if (userMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, userMessage.id, "user", input.text.trim())
 
-    // Registra a solicitação antes de chamar o agente. O agente nunca deve
-    // executar alterações diretamente; o motor recebe a solicitação em draft.
-    const tarefa = await this.detectarECriarTarefa(sessao.projetoId, input.text.trim())
-
     if (!this.bridge.isConfigured()) {
       return { ok: false, reason: "offline" }
     }
@@ -184,30 +201,189 @@ export class HelpDeskService {
       model: modelChain[0]?.modelo,
     })
 
+    // Detecção da PRIMEIRA mensagem: cursor vazio/nulo E histórico do console
+    // sem mensagens de usuário.
+    const cursorAtual = (sessao.ultimoConsoleMessageId ?? "").trim()
+    const primeiraMensagem = !cursorAtual && !(await this.bridge.temMensagensDeUsuario(resolved.sessionKey))
+    const textoParaEnviar = this.bridge.prefixarInstrucoes(
+      await this.bridge.resolverPromptAtendimento(),
+      input.text.trim(),
+      primeiraMensagem,
+    )
+
     // Fallback em cadeia de modelos
     const sendResult = await this.bridge.sendWithChain({
       sessionKey: resolved.sessionKey,
-      text: input.text.trim(),
+      text: textoParaEnviar,
       modelChain,
+      cursor: cursorAtual || null,
     })
 
     if (sendResult.ok) {
       if (sendResult.processing) {
         this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing: true, responded: false } })
+        // Reconciler server-side: persiste + publica MESMO com widget fechado.
+        this.agendarReconciler({ id: sessao.id, projetoId: sessao.projetoId, usuarioId: sessao.usuarioId }, input.usuarioId, resolved.sessionKey, cursorAtual || null)
         return { ok: true, messageId: sendResult.runId, processing: true }
       }
-      const respostaAgente = this.confirmarTarefa(sendResult.responseText ?? "", tarefa)
-      const [agentMessage] = await db.insert(helpDeskMessageTable).values({
+      const persistida = await this.persistirRespostaAgente({
         sessaoId: input.sessaoId,
-        role: "agent",
-        text: respostaAgente,
-      }).$returningId()
-      if (agentMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, agentMessage.id, "agent", respostaAgente)
-
+        sessionKey: resolved.sessionKey,
+        cursor: cursorAtual || null,
+        usuarioId: input.usuarioId,
+      })
+      if (!persistida.ok) {
+        // Resposta inválida/ausente: mantém processing para o reconciler.
+        this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing: true, responded: false } })
+        this.agendarReconciler({ id: sessao.id, projetoId: sessao.projetoId, usuarioId: sessao.usuarioId }, input.usuarioId, resolved.sessionKey, cursorAtual || null)
+        return { ok: true, messageId: sendResult.runId, processing: true }
+      }
       return { ok: true, messageId: sendResult.runId }
     }
 
     return { ok: false, reason: "offline", retryable: false }
+  }
+
+  // ===========================================================================
+  // PERSISTÊNCIA ÚNICA DA RESPOSTA DO AGENTE (síncrono, reconciler, /status)
+  // ===========================================================================
+
+  /**
+   * ÚNICO ponto de persistência da resposta do agente:
+   * - resolve pelo cursor (id maior que o cursor persistido);
+   * - filtra resposta vazia / "(no output)";
+   * - evita dupla persistência da mesma resposta;
+   * - atualiza o cursor da sessão;
+   * - publica realtime (`helpdesk.message.created` + `helpdesk.processing.changed`).
+   *
+   * Retorna `{ ok: false }` quando não há resposta válida disponível.
+   */
+  async persistirRespostaAgente(input: {
+    sessaoId: number
+    sessionKey: string
+    cursor: string | null
+    usuarioId: number
+  }): Promise<{ ok: boolean; messageId?: number; resposta?: string; tarefa?: { id: number; externalId: string; status: string } | null }> {
+    const db = await this.getCoreDb()
+
+    const [sessao] = await db
+      .select()
+      .from(helpDeskSessionTable)
+      .where(eq(helpDeskSessionTable.id, input.sessaoId))
+      .limit(1)
+    if (!sessao) return { ok: false }
+
+    const respostaBruta = await this.bridge.obterRespostaPorCursor(input.sessionKey, input.cursor)
+    if (respostaBruta === undefined || ehRespostaInvalida(respostaBruta)) return { ok: false }
+
+    // Ponto único de extração do bloco de contrato emitido pelo agente
+    // (`criar_tarefa {...}`): vale para o caminho síncrono, reconciler e /status.
+    const { textoVisivel, contrato } = extrairContratoTarefa(respostaBruta)
+    if (!textoVisivel) return { ok: false }
+
+    // Cria a tarefa draft ANTES de persistir: se falhar, a resposta é
+    // persistida inalterada (sem o bloco) e o usuário não perde o texto.
+    let tarefa: { id: number; externalId: string; status: string } | null = null
+    if (contrato) {
+      tarefa = await this.criarTarefaDraft(sessao.projetoId, textoVisivel, contrato.titulo, contrato.descricao)
+      if (!tarefa) {
+        this.logger.warn(`Contrato de tarefa presente mas draft não foi criado; resposta persistida sem confirmação (sessao=${input.sessaoId})`)
+      }
+    }
+
+    const textoFinal = tarefa ? `${textoVisivel}\n\n${textoConfirmacaoTarefa(tarefa)}` : textoVisivel
+    const resposta = textoFinal.length > 10_000 ? textoFinal.slice(0, 10_000) : textoFinal
+
+    const [jaPersistida] = await db
+      .select({ id: helpDeskMessageTable.id })
+      .from(helpDeskMessageTable)
+      .where(and(
+        eq(helpDeskMessageTable.sessaoId, input.sessaoId),
+        eq(helpDeskMessageTable.role, "agent"),
+        eq(helpDeskMessageTable.text, resposta),
+      ))
+      .limit(1)
+
+    if (!jaPersistida) {
+      const [agentMessage] = await db
+        .insert(helpDeskMessageTable)
+        .values({ sessaoId: input.sessaoId, role: "agent", text: resposta })
+        .$returningId()
+      if (agentMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, agentMessage.id, "agent", resposta)
+    }
+
+    // Atualiza o cursor: última id assistant já processada.
+    const history = await this.bridge.getHistory({ sessionKey: input.sessionKey, limit: 100 })
+    const ultimoId = [...history].reverse().find((m) => m.id)?.id ?? (input.cursor ?? "")
+    if (ultimoId && ultimoId !== (sessao.ultimoConsoleMessageId ?? "")) {
+      await db
+        .update(helpDeskSessionTable)
+        .set({ ultimoConsoleMessageId: ultimoId })
+        .where(eq(helpDeskSessionTable.id, input.sessaoId))
+    }
+
+    this.realtime?.publicarHelpDesk({
+      projectId: sessao.projetoId,
+      userId: input.usuarioId,
+      sessionId: input.sessaoId,
+      type: "helpdesk.processing.changed",
+      payload: { processing: false, responded: true },
+    })
+
+    return { ok: true, messageId: jaPersistida?.id, resposta, tarefa }
+  }
+
+  // ===========================================================================
+  // RECONCILER SERVER-SIDE (widget fechado)
+  // ===========================================================================
+
+  /**
+   * Agenda polling no servidor: a cada `intervalMs` (teto `tetoMs`) consulta
+   * o histórico do console pelo cursor e, ao encontrar a resposta, persiste
+   * em core.helpdesk_mensagens e publica realtime — mesmo com o widget fechado.
+   * Guarda em memória por sessaoId evita reconcilers duplicados concorrentes.
+   */
+  private agendarReconciler(
+    sessao: { id: number; projetoId: number; usuarioId: number },
+    usuarioId: number,
+    sessionKey: string,
+    cursorInicial: string | null,
+  ): void {
+    if (this.reconcilersAtivos.has(sessao.id)) return
+    this.reconcilersAtivos.add(sessao.id)
+
+    let tentativas = 0
+    const cfg = this.reconcilerConfigValue
+    const maxTentativas = Math.max(1, Math.ceil(cfg.tetoMs / cfg.intervalMs))
+    const rodar = async (): Promise<void> => {
+      while (tentativas < maxTentativas) {
+        tentativas += 1
+        try {
+          const resultado = await this.persistirRespostaAgente({
+            sessaoId: sessao.id,
+            sessionKey,
+            cursor: cursorInicial,
+            usuarioId,
+          })
+          if (resultado.ok) {
+            this.reconcilersAtivos.delete(sessao.id)
+            return
+          }
+        } catch (err) {
+          this.logger.warn(`Reconciler helpdesk sessao=${sessao.id}: ${err}`)
+          this.reconcilersAtivos.delete(sessao.id)
+          return
+        }
+        if (tentativas < maxTentativas) {
+          await new Promise<void>((resolve) => setTimeout(resolve, cfg.intervalMs))
+        }
+      }
+      this.reconcilersAtivos.delete(sessao.id)
+      this.logger.warn(`Reconciler helpdesk sessao=${sessao.id} atingiu o teto sem resposta (${maxTentativas} tentativas)`)
+    }
+    rodar().catch(() => {
+      this.reconcilersAtivos.delete(sessao.id)
+    })
   }
 
   /** Tool server-side: consulta tenant, destino e janela no fuso configurado. */
@@ -329,28 +505,18 @@ export class HelpDeskService {
       usuarioId: input.usuarioId,
       projetoId: sessao.projetoId,
     })
-    const resposta = await this.bridge.obterResposta(resolved.sessionKey, ultimaMensagem.text)
+    const cursor = (sessao.ultimoConsoleMessageId ?? "").trim() || null
 
-    if (resposta) {
-      const [jaPersistida] = await db
-        .select({ id: helpDeskMessageTable.id })
-        .from(helpDeskMessageTable)
-        .where(and(
-          eq(helpDeskMessageTable.sessaoId, input.sessaoId),
-          eq(helpDeskMessageTable.role, "agent"),
-          eq(helpDeskMessageTable.text, resposta),
-        ))
-        .limit(1)
+    // Convergência: mesmo ponto de persistência usado pelo caminho síncrono
+    // e pelo reconciler (evita dupla persistência da mesma resposta).
+    const resultado = await this.persistirRespostaAgente({
+      sessaoId: input.sessaoId,
+      sessionKey: resolved.sessionKey,
+      cursor,
+      usuarioId: input.usuarioId,
+    })
 
-      if (!jaPersistida) {
-        const [agentMessage] = await db.insert(helpDeskMessageTable).values({
-          sessaoId: input.sessaoId,
-          role: "agent",
-          text: resposta,
-        }).$returningId()
-        if (agentMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, agentMessage.id, "agent", resposta)
-      }
-      this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing: false, responded: true } })
+    if (resultado.ok) {
       return { ok: true, processing: false, responded: true }
     }
 
@@ -501,32 +667,16 @@ export class HelpDeskService {
   }
 
   // ===========================================================================
-  // DETECÇÃO + CRIAÇÃO DE TAREFA NO PROJETO (draft)
+  // CRIAÇÃO DE TAREFA NO PROJETO (draft) — acoplada via contrato do agente
+  // (extração do bloco `criar_tarefa {...}` em `persistirRespostaAgente`)
   // ===========================================================================
 
-  private async detectarECriarTarefa(projetoId: number, textoUsuario: string): Promise<{ id: number; externalId: string; status: string } | null> {
-    const solicitacoes = this.detectarSolicitacao(textoUsuario)
-    if (solicitacoes.length === 0) return null
-
-    return this.criarTarefaDraft(projetoId, textoUsuario, solicitacoes[0]!)
-  }
-
-  private detectarSolicitacao(texto: string): string[] {
-    const t = texto.toLowerCase()
-    const perguntaInformativa = /^(como|qual|quais|o que|por que|porque|onde|quando|quem|posso|é possível|e possível|você pode|voce pode)\b/.test(t)
-      || t.endsWith("?")
-    if (perguntaInformativa) return []
-
-    // Saudações e confirmações não são solicitações do motor.
-    if (/^(oi|olá|ola|bom dia|boa tarde|boa noite|obrigado|obrigada|valeu|ok|certo|entendi)\b/.test(t)) {
-      return []
-    }
-
-    const pedidoDeAlteracao = /\b(crie|criar|implemente|implementar|altere|alterar|corrija|corrigir|adicione|adicionar|remova|remover|mude|mudar|ajuste|ajustar|solicito|preciso que|quero que|gostaria que|faça|faca)\b/.test(t)
-    return pedidoDeAlteracao && texto.trim() ? [texto.trim()] : []
-  }
-
-  private async criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<{ id: number; externalId: string; status: string } | null> {
+  private async criarTarefaDraft(
+    projetoId: number,
+    textoVisivel: string,
+    titulo: string,
+    descricao: string,
+  ): Promise<{ id: number; externalId: string; status: string } | null> {
     try {
       const projetoCaptado = await this.obterProjetoCaptado(projetoId)
       if (!projetoCaptado) {
@@ -536,16 +686,15 @@ export class HelpDeskService {
 
       // `projetoId` é o ID do projeto da plataforma (ex.: TaQui = 6611),
       // enquanto tarefas e projetos_captados vivem no database do Gerente de
-      // Agentes (projeto_640). Usar projetoId aqui tentava inserir em
+      // Agentes (projeto_640). Usar projetoId aqui tentaria inserir em
       // projeto_6611, que não possui a tabela operacional `tarefas`.
-      const titulo = `[HelpDesk] ${solicitacao.substring(0, 100)}`
       if (!this.gerenteAgentes) throw new Error("GerenteAgentes indisponível")
       const tarefa = await this.gerenteAgentes.criarTarefa(
         { id: projetoId, nome: "HelpDesk", slug: "helpdesk", perfil: "admin" },
         {
           managedProjectId: projetoCaptado.id,
-          titulo,
-          descricao: textoOriginal,
+          titulo: titulo.substring(0, 100),
+          descricao: `${textoVisivel}\n\nSolicitação original: ${descricao}`,
           tipo: "desenvolvimento",
           status: "draft",
           autoStart: false,
@@ -553,17 +702,12 @@ export class HelpDeskService {
           databaseProjectId: GERENTE_AGENTES_PROJECT_ID,
         },
       ) as { id: number; externalId?: string; status?: string }
-      this.logger.log(`Tarefa draft criada no projeto ${projetoId}: "${solicitacao.substring(0, 80)}..."`)
+      this.logger.log(`Tarefa draft criada no projeto ${projetoId}: "${titulo.substring(0, 80)}..."`)
       return { id: Number(tarefa.id), externalId: tarefa.externalId ?? `task-${tarefa.id}`, status: tarefa.status ?? "draft" }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       this.logger.warn(`Não foi possível criar tarefa no projeto ${projetoId}: ${msg}`)
       return null
     }
-  }
-
-  private confirmarTarefa(resposta: string, tarefa: { id: number; externalId: string; status: string } | null): string {
-    if (!tarefa) return resposta
-    return `${resposta}\n\nSolicitação registrada como tarefa draft ${tarefa.externalId} (id ${tarefa.id}). Estado atual: ${tarefa.status}. Você pode perguntar por esse identificador para acompanhar o andamento.`
   }
 }

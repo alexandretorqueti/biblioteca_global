@@ -281,4 +281,200 @@ describe("AuthPanel", () => {
       screen.getByText("Login realizado com sucesso."),
     ).toBeInTheDocument()
   })
+
+  // ── Consentimento no modo código (tarefa login-codigo-consentimento-lgpd) ─
+
+  it("exibe o checkbox de consentimento no modo código quando requirePrivacyConsent=true", async () => {
+    const user = userEvent.setup()
+    render(
+      <AuthPanel
+        config={{ ...config, requirePrivacyConsent: true }}
+        onRequestCode={async () => undefined}
+      />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+
+    const checkbox = await screen.findByLabelText(
+      /Li e concordo com a Política de Privacidade/,
+    )
+    expect(checkbox).toBeInTheDocument()
+    // Link /politica-privacidade, mesma redação do modo senha.
+    expect(screen.getByText("Política de Privacidade")).toHaveAttribute(
+      "href",
+      "/politica-privacidade",
+    )
+  })
+
+  it("oculta o checkbox quando requirePrivacyConsent está ausente", async () => {
+    const user = userEvent.setup()
+    render(
+      <AuthPanel config={config} onRequestCode={async () => undefined} />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+    await screen.findByLabelText(/Código de 6 dígitos\b/)
+
+    expect(
+      screen.queryByLabelText(/Li e concordo com a Política de Privacidade/),
+    ).not.toBeInTheDocument()
+  })
+
+  it("desabilita o botão do modo código até 6 dígitos E checkbox marcado", async () => {
+    const user = userEvent.setup()
+    render(
+      <AuthPanel
+        config={{ ...config, requirePrivacyConsent: true }}
+        onRequestCode={async () => undefined}
+      />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+
+    const checkbox = await screen.findByLabelText(
+      /Li e concordo com a Política de Privacidade/,
+    )
+    const codeInput = await screen.findByLabelText(/Código de 6 dígitos\b/)
+    const entrar = screen.getByRole("button", { name: "Entrar" })
+
+    // Código incompleto + checkbox desmarcado → disabled.
+    await user.type(codeInput, "12")
+    expect(entrar).toBeDisabled()
+
+    // Código completo, checkbox desmarcado → ainda disabled.
+    await user.type(codeInput, "3456")
+    expect(entrar).toBeDisabled()
+
+    // Código completo + checkbox marcado → habilitado.
+    await user.click(checkbox)
+    expect(entrar).toBeEnabled()
+  })
+
+  it("com requirePrivacyConsent ausente, só o código completo habilita o botão", async () => {
+    const user = userEvent.setup()
+    render(
+      <AuthPanel config={config} onRequestCode={async () => undefined} />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+
+    const codeInput = await screen.findByLabelText(/Código de 6 dígitos\b/)
+    const entrar = screen.getByRole("button", { name: "Entrar" })
+
+    expect(entrar).toBeDisabled()
+    await user.type(codeInput, "123456")
+    expect(entrar).toBeEnabled()
+  })
+
+  it("chama onVerifyCode com (email, code, true) quando o checkbox está marcado", async () => {
+    const user = userEvent.setup()
+    let chamada: [string, string, boolean?] | undefined
+    render(
+      <AuthPanel
+        config={{ ...config, requirePrivacyConsent: true }}
+        onRequestCode={async () => undefined}
+        onVerifyCode={async (email, code, consentimento) => {
+          chamada = [email, code, consentimento]
+          return { primeiraVez: false }
+        }}
+      />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+    await user.type(
+      await screen.findByLabelText(/Código de 6 dígitos\b/),
+      "123456",
+    )
+    await user.click(
+      await screen.findByLabelText(
+        /Li e concordo com a Política de Privacidade/,
+      ),
+    )
+    await user.click(screen.getByRole("button", { name: "Entrar" }))
+
+    expect(chamada).toEqual(["cliente@exemplo.com", "123456", true])
+  })
+
+  it("exibe a mensagem real da API em 400 (consentimento) em vez de 'Código inválido'", async () => {
+    const user = userEvent.setup()
+    render(
+      <AuthPanel
+        config={{ ...config, requirePrivacyConsent: true }}
+        onRequestCode={async () => undefined}
+        onVerifyCode={async () => {
+          const erro = new Error(
+            "É necessário aceitar a Política de Privacidade para entrar",
+          )
+          ;(erro as Error & { status: number }).status = 400
+          throw erro
+        }}
+      />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+    await user.type(
+      await screen.findByLabelText(/Código de 6 dígitos\b/),
+      "123456",
+    )
+    await user.click(
+      await screen.findByLabelText(
+        /Li e concordo com a Política de Privacidade/,
+      ),
+    )
+    await user.click(screen.getByRole("button", { name: "Entrar" }))
+
+    expect(
+      await screen.findByText(
+        "É necessário aceitar a Política de Privacidade para entrar",
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("Código inválido ou expirado."),
+    ).not.toBeInTheDocument()
+  })
+
+  it("exibe 'Código inválido ou expirado.' em rejeição 401/genérica", async () => {
+    const user = userEvent.setup()
+    render(
+      <AuthPanel
+        config={{ ...config, requirePrivacyConsent: true }}
+        onRequestCode={async () => undefined}
+        onVerifyCode={async () => {
+          const erro = new Error("Unauthorized")
+          ;(erro as Error & { status: number }).status = 401
+          throw erro
+        }}
+      />,
+    )
+
+    await user.click(screen.getByText("Entrar com código por e-mail"))
+    await user.type(screen.getByLabelText(/E-mail\b/), "cliente@exemplo.com")
+    await user.click(screen.getByRole("button", { name: "Enviar código" }))
+    await user.type(
+      await screen.findByLabelText(/Código de 6 dígitos\b/),
+      "123456",
+    )
+    await user.click(
+      await screen.findByLabelText(
+        /Li e concordo com a Política de Privacidade/,
+      ),
+    )
+    await user.click(screen.getByRole("button", { name: "Entrar" }))
+
+    expect(
+      await screen.findByText("Código inválido ou expirado."),
+    ).toBeInTheDocument()
+  })
 })

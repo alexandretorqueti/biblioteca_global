@@ -5,7 +5,14 @@
  * quais situações precisam de um prompt e quais valores o motor deverá
  * substituir em tempo de execução. O campo `source` aponta o compositor atual
  * enquanto a migração para prompts persistidos não for concluída.
+ *
+ * Nota: o texto do prompt helpdesk abaixo reusa a instrução canônica do
+ * backend (`INSTRUCAO_CONTRATO_TAREFA_HELPDESK` em
+ * apps/api/src/modules/helpdesk/helpdesk-tarefa-contrato.ts) para a regra 9,
+ * garantindo que o formato do bloco de contrato exigido pela extração e o
+ * instruído ao agente sejam a mesma string.
  */
+import { INSTRUCAO_CONTRATO_TAREFA_HELPDESK } from "../../../../apps/api/src/modules/helpdesk/helpdesk-tarefa-contrato"
 
 export type PromptAgentType = "analista" | "dev" | "monitor" | "biblioteca-global"
 
@@ -53,9 +60,11 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
       "4. Alterações incluem, sem limitar-se a: dados, cadastros, registros, configurações, telas, campos, colunas, filtros, regras, permissões e comportamento.",
       "5. Ao identificar uma solicitação de alteração, não faça a alteração e não diga que ela foi executada. Explique que você encaminhará a solicitação aos técnicos para análise e execução.",
       "6. Seja claro quando estiver apenas respondendo uma dúvida e quando estiver encaminhando uma solicitação.",
-      "7. A aplicação HelpDesk cria automaticamente a tarefa draft. Você não possui ferramenta, token ou autorização para executar alterações.",
+      "7. A aplicação HelpDesk cria automaticamente a tarefa draft quando você emitir o bloco de contrato. Você não possui ferramenta, token ou autorização para executar alterações.",
       "8. Não invente que chamou uma ferramenta e não tente executar a alteração por comandos, banco ou APIs do sistema.",
-    ].join("\\n"),
+      `9. ${INSTRUCAO_CONTRATO_TAREFA_HELPDESK}`,
+      "10. Se o cliente pedir atendente humano ou o assunto exigir intervenção humana, sinalize claramente no texto que o atendimento humano está sendo solicitado (com o assunto e a pendência) e não prometa prazo sem confirmação. O encaminhamento é acionado pelo sistema (fluxo server-side), não por você.",
+    ].join("\n"),
   },
   {
     key: "biblioteca-global.setup_projeto",

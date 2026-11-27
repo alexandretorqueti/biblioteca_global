@@ -32,6 +32,7 @@ import { GestaoTarefasGlobalFluxoModule } from "./modules/gestao-tarefas-global-
 import { GestaoTarefasGlobalAnexosModule } from "./modules/gestao-tarefas-global-anexos/gestao-tarefas-global-anexos.module"
 import { GestaoTarefasGlobalRecorrenciaModule } from "./modules/gestao-tarefas-global-recorrencia/gestao-tarefas-global-recorrencia.module"
 import { GestaoTarefasGlobalNotificacoesModule } from "./modules/gestao-tarefas-global-notificacoes/gestao-tarefas-global-notificacoes.module"
+import { GestaoTarefasGlobalVisoesModule } from "./modules/gestao-tarefas-global-visoes/gestao-tarefas-global-visoes.module"
 
 @Module({
   imports: [
@@ -76,6 +77,9 @@ import { GestaoTarefasGlobalNotificacoesModule } from "./modules/gestao-tarefas-
     // Agendador do motor de lembretes (gestao-de-tarefas-global): sem rotas,
     // apenas o timer de disparo (macro 5, subtarefa 1).
     GestaoTarefasGlobalNotificacoesModule,
+    // Visões por área/categoria (gestao-de-tarefas-global): rotas
+    // :slug/visoes/... mais específicas que o CRUD — casadas antes.
+    GestaoTarefasGlobalVisoesModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,

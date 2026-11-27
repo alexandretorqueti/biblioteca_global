@@ -607,6 +607,92 @@ describe("AuthService", () => {
           service.verifyCode({ email: EMAIL, code: CODIGO }),
         ).rejects.toBeInstanceOf(UnauthorizedException)
       })
+
+      it("conta pós-2026-09-01 + consentimentoAceito=true: login completo e consentimento registrado", async () => {
+        const EMAIL_NOVO = "gabriel@exemplo.com"
+        repo.usuarios.push(
+          makeUsuario({
+            id: 6154,
+            email: EMAIL_NOVO,
+            passwordHash: await argon2.hash(SENHA),
+            createdAt: new Date("2026-10-15T12:00:00.000Z"),
+          }),
+        )
+        criarVerificacao(EMAIL_NOVO, CODIGO)
+
+        const resposta = await service.verifyCode({
+          email: EMAIL_NOVO,
+          code: CODIGO,
+          consentimentoAceito: true,
+        })
+        expect(resposta.primeiraVez).toBe(false)
+        if (resposta.primeiraVez) throw new Error("esperava login completo")
+        expect(resposta.refreshToken).toBeTruthy()
+        expect(resposta.usuario.email).toBe(EMAIL_NOVO)
+        // Consentimento novo registrado com a versão atual da política.
+        const novo = repo.consentimentos.find((c) => c.usuarioId === 6154)
+        expect(novo).toBeDefined()
+        expect(novo?.versaoPolitica).toBe("1.0")
+        // Código marcado como usado após o aceite.
+        expect(repo.emailVerifications[0]?.usedAt).not.toBeNull()
+        expect(repo.logsLogin).toHaveLength(1)
+      })
+
+      it("conta pós-2026-09-01 sem consentimentoAceito: 400 de política e código NÃO queimado", async () => {
+        const EMAIL_NOVO = "gabriel@exemplo.com"
+        repo.usuarios.push(
+          makeUsuario({
+            id: 6154,
+            email: EMAIL_NOVO,
+            passwordHash: await argon2.hash(SENHA),
+            createdAt: new Date("2026-10-15T12:00:00.000Z"),
+          }),
+        )
+        criarVerificacao(EMAIL_NOVO, CODIGO)
+
+        await expect(
+          service.verifyCode({
+            email: EMAIL_NOVO,
+            code: CODIGO,
+            consentimentoAceito: false,
+          }),
+        ).rejects.toMatchObject({
+          status: 400,
+          message: "É necessário aceitar a Política de Privacidade para entrar",
+        })
+        // Código reenviável: usedAt segue NULL, sem log de login, sem consentimento.
+        expect(repo.emailVerifications[0]?.usedAt).toBeNull()
+        expect(repo.logsLogin).toHaveLength(0)
+        expect(repo.consentimentos).toHaveLength(0)
+
+        // Mesma verificação agora aceita com o aceite.
+        const resposta = await service.verifyCode({
+          email: EMAIL_NOVO,
+          code: CODIGO,
+          consentimentoAceito: true,
+        })
+        expect(resposta.primeiraVez).toBe(false)
+        expect(repo.emailVerifications[0]?.usedAt).not.toBeNull()
+      })
+
+      it("conta pré-2026-09-01 com consentimento prévio mantém o comportamento atual", async () => {
+        repo.consentimentos.push({
+          usuarioId: 20,
+          versaoPolitica: "1.0",
+          data: new Date("2026-08-20T00:00:00.000Z"),
+          ip: "127.0.0.1",
+        })
+        criarVerificacao(EMAIL, CODIGO)
+
+        const resposta = await service.verifyCode({ email: EMAIL, code: CODIGO })
+        expect(resposta.primeiraVez).toBe(false)
+        if (resposta.primeiraVez) throw new Error("esperava login completo")
+        expect(resposta.refreshToken).toBeTruthy()
+        expect(repo.emailVerifications[0]?.usedAt).not.toBeNull()
+        expect(repo.logsLogin).toHaveLength(1)
+        // Consentimento prévio não é duplicado pelo verifyCode.
+        expect(repo.consentimentos).toHaveLength(1)
+      })
     })
 
     describe("setPassword", () => {

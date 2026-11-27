@@ -99,6 +99,22 @@ const configBase: GeradorSistemaConfig = {
               columnLabels: { id: "ID", organizacaoId: "Organização", responsavelId: "Responsável" },
               newLabel: "Nova área",
             },
+            // Navegação contextual (macro #8): o botão "Tarefas" de uma linha
+            // abre a tela custom de visões no modo drill (filterField "areaId"
+            // + filterValue = id da área — a tela consulta a API; o
+            // targetResource "tarefas" mantém o runtime do GeradorSistema
+            // satisfeito na pilha de navegação). Registry: screens/registry.ts.
+            childRoutes: [
+              {
+                id: "tarefas-da-area",
+                label: "Tarefas",
+                icon: "viewlist",
+                targetResource: "tarefas",
+                filterField: "areaId",
+                title: "Tarefas da área",
+                componentId: "gestao-de-tarefas-global-visoes",
+              },
+            ],
           },
         },
         {
@@ -125,6 +141,19 @@ const configBase: GeradorSistemaConfig = {
               columnLabels: { id: "ID", organizacaoId: "Organização" },
               newLabel: "Nova tag",
             },
+            // Navegação contextual (macro #8): drill por tag — o vínculo M:N
+            // (tarefa_tags) é resolvido no backend do endpoint de visões.
+            childRoutes: [
+              {
+                id: "tarefas-da-tag",
+                label: "Tarefas",
+                icon: "viewlist",
+                targetResource: "tarefas",
+                filterField: "tagId",
+                title: "Tarefas da tag",
+                componentId: "gestao-de-tarefas-global-visoes",
+              },
+            ],
           },
         },
       ],
@@ -318,6 +347,20 @@ const configBase: GeradorSistemaConfig = {
               { campo: "prazo", direction: "asc" },
               { campo: "prioridade", direction: "desc" },
             ],
+          },
+        },
+        {
+          id: "visoes",
+          label: "Visões",
+          path: "visoes",
+          icon: "dashboard",
+          // Tela custom de agrupamentos (macro #8, subtarefa 2): seções
+          // "Por área" e "Por tag" com contagens de pendentes/vencidas do
+          // servidor (GET /:slug/visoes/resumo) e drill interno com filtros
+          // rápidos. Sem props — item de menu (registry: screens/registry.ts).
+          screen: {
+            kind: "custom",
+            componentId: "gestao-de-tarefas-global-visoes",
           },
         },
         {
