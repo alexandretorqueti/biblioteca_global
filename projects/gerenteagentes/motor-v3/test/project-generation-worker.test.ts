@@ -407,6 +407,41 @@ describe('ProjectGenerationWorker — contrato §5', () => {
     expect(db.queries.some(q => /INSERT INTO bloqueios/i.test(q.sql))).toBe(false)
   })
 
+  // Regressão do incidente da geração 8 (Vitrine IA, 26/11/2026):
+  // qwen3.8-max com maxTokens=8192 cortou o JSON no meio (stopReason=length,
+  // 29472 caracteres). O parser antigo dizia "resposta não contém JSON" e a
+  // correção genérica regenerava o mesmo plano gigante — cortado de novo.
+  it('resposta truncada por limite de tokens → correção orienta COMPACTAR e erro final nomeia o truncamento', async () => {
+    const db = createFakeDb([{ id: 16 }])
+    const truncada = PLANO_VALIDO.slice(0, 900) // corta no meio de uma chave, sem fechar o objeto
+    const console_ = new FakeConsole([truncada, truncada])
+    const { worker } = createWorker(db, console_)
+
+    await worker.tick()
+
+    const geracao = db.geracoes[0]
+    expect(geracao.status).toBe('failed')
+    expect(geracao.erro).toMatch(/^contract_violation: resposta truncada pelo limite de tokens/)
+    expect(console_.sentMessages[1]).toContain('CORTADA pelo limite de tokens')
+    expect(console_.sentMessages[1]).toContain('COMPACTA')
+    // A correção específica substitui a genérica quando o diagnóstico é truncamento.
+    expect(console_.sentMessages[1]).not.toContain('Responda somente com o JSON único do contrato')
+  })
+
+  it('truncamento na 1ª resposta → retentativa compacta válida → awaiting_approval (auto-cura na mesma sessão)', async () => {
+    const db = createFakeDb([{ id: 16 }])
+    const truncada = PLANO_VALIDO.slice(0, 1200)
+    const console_ = new FakeConsole([truncada, PLANO_VALIDO])
+    const { worker } = createWorker(db, console_)
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('awaiting_approval')
+    expect(db.geracoes[0].erro).toBeNull()
+    // Uma única sessão: a correção ocorreu na mesma conversa, sem queimar modelo da cadeia.
+    expect(console_.createdSessions).toHaveLength(1)
+  })
+
   it('plano que viola regra cruzada (requerAgenteDedicado=false com executor agente-projeto) → failed', async () => {
     const planoInvalido = JSON.stringify({
       ...JSON.parse(PLANO_VALIDO),

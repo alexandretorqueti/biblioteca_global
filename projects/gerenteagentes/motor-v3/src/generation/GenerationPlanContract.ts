@@ -112,6 +112,19 @@ export function parseGenerationReply(content: string): GenerationOutcome {
   const source = sanitizeModelResponse(content)
   const candidates = extractJsonObjects(source)
   if (candidates.length === 0) {
+    // Truncamento por limite de tokens de saída: o modelo EMITE JSON, mas o
+    // objeto nunca fecha (incidente geração 8 — Vitrine IA, 26/11/2026:
+    // stopReason="length", 29472 caracteres, corte no meio da matrizCobertura).
+    // Dizer "não contém JSON" obrigava a caçar a causa na transcript; a
+    // correção genérica tampouco ajuda — o modelo regenera o mesmo plano
+    // gigante e é cortado de novo. Detectar aqui permite instrução compacta
+    // no worker (retentativa) e mensagem honesta no erro final.
+    if (hasUnterminatedJsonObject(source)) {
+      violation(
+        `resposta truncada pelo limite de tokens de saída (JSON aberto sem fechamento após ${source.trim().length} caracteres) — ` +
+        'retentativa deve COMPACTAR o plano; se persistir, aumente maxTokens do modelo ou reduza o escopo da geração',
+      )
+    }
     violation(`resposta não contém JSON (recebidos ${source.trim().length} caracteres)`)
   }
   let parsed: Record<string, any> | undefined
@@ -293,6 +306,33 @@ function parsePlano(parsed: Record<string, any>): GenerationOutcome {
       foraDeFase,
     },
   }
+}
+
+/**
+ * True quando há um objeto JSON ABERTO que nunca fecha — assinatura de
+ * resposta cortada no meio (stopReason=length), distinguindo truncamento de
+ * resposta sem JSON algum. Varredura com a mesma semântica de strings/escapes
+ * de extractJsonObjects.
+ */
+export function hasUnterminatedJsonObject(content: string): boolean {
+  const source = content.trim()
+  let sawOpen = false
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') { inString = true; continue }
+    if (character === '{') { sawOpen = true; depth += 1 }
+    else if (character === '}') depth -= 1
+  }
+  return sawOpen && depth > 0
 }
 
 /** Extrai todos os objetos JSON balanceados; o chamador escolhe a assinatura válida. */

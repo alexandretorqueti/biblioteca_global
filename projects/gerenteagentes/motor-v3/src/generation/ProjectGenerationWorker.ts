@@ -304,13 +304,22 @@ export class ProjectGenerationWorker {
           } catch (parseError) {
             if (corrections >= this.config.maxContractCorrections) throw parseError
             corrections += 1
+            const truncated = /truncada pelo limite/i.test(asError(parseError).message)
             await this.consoleApi.sendMessage({
               session,
               message: [
                 'Sua resposta anterior violou o contrato de saída. Corrija e responda novamente.',
                 `Erro: ${asError(parseError).message}`,
+                truncated
+                  ? [
+                      'Sua resposta foi CORTADA pelo limite de tokens de saída antes de fechar o JSON.',
+                      'Gere o MESMO plano em forma COMPACTA, sem remover nenhuma tarefa, requisito, entidade ou linha da matrizCobertura:',
+                      '- objetivo ≤ 25 palavras; escopo ≤ 40 palavras; cada aceite ≤ 12 palavras;',
+                      '- justificativa da matrizCobertura ≤ 8 palavras; observacoes ≤ 40 palavras;',
+                      '- nada de texto, comentários ou markdown fora do JSON único.',
+                    ].join('\n')
+                  : 'Responda somente com o JSON único do contrato (forma "plano" ou forma "perguntas").',
                 contractText ? `Contrato obrigatório:\n${contractText}` : '',
-                'Responda somente com o JSON único do contrato (forma "plano" ou forma "perguntas").',
               ].filter(Boolean).join('\n'),
             })
             content = await this.waitForResponse(session)
