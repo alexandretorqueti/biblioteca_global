@@ -15,6 +15,7 @@ import {
   GestaoTarefasGlobalEscopo,
   SLUG_GESTAO_TAREFAS_GLOBAL,
 } from "./escopo/gestao-tarefas-global.escopo"
+import { VitrineIaEscopo } from "./escopo/vitrine-ia.escopo"
 import { RepositorioTenancyProjectDb } from "./escopo/repositorio-tenancy.crud"
 import {
   CONECTOR_PROJETO,
@@ -47,7 +48,9 @@ import { GestaoGlobalTasksRepository, GESTAO_GLOBAL_TASKS_REPOSITORY } from "./g
     },
     // Tenancy intra-projeto (gestao-de-tarefas-global): repositório do guard,
     // guard delegado + guard condicionado ao slug e extensão de escopo do CRUD.
-    // Demais slugs não são afetados (guard transparente e extensão por slug).
+    // Vitrine IA: extensão de garantias de campo (credenciais write-only e
+    // campos de fluxo ingraváveis), também condicionada ao slug. Demais slugs
+    // não são afetados (guard transparente e extensão por slug).
     {
       provide: REPOSITORIO_TENANCY,
       inject: [PROJECT_DB_FACTORY, CORE_DB],
@@ -58,7 +61,7 @@ import { GestaoGlobalTasksRepository, GESTAO_GLOBAL_TASKS_REPOSITORY } from "./g
     EscopoOrganizacaoPorSlugGuard,
     {
       provide: CRUD_ESCOPO_EXTENSIONS,
-      useValue: [new GestaoTarefasGlobalEscopo()],
+      useValue: [new GestaoTarefasGlobalEscopo(), new VitrineIaEscopo()],
     },
   ],
   exports: [
