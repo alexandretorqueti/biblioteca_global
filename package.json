@@ -22,6 +22,8 @@
     "db:generate:documentacao": "drizzle-kit generate --config projects/documentacao/drizzle.config.ts",
     "db:generate:gerenteagentes": "drizzle-kit generate --config projects/gerenteagentes/drizzle.config.ts",
     "db:migrate:gerenteagentes": "drizzle-kit migrate --config projects/gerenteagentes/drizzle.config.ts",
+    "db:generate:vitrine": "drizzle-kit generate --config projects/vitrine-ia-loja-de-atendentes-virtuais/drizzle.config.ts",
+    "db:migrate:vitrine": "drizzle-kit migrate --config projects/vitrine-ia-loja-de-atendentes-virtuais/drizzle.config.ts",
     "db:bootstrap:gerenteagentes": "tsx projects/gerenteagentes/src/scripts/prompt-defaults.ts",
     "prompts:bootstrap": "tsx projects/gerenteagentes/src/scripts/prompt-defaults.ts",
     "prompts:export-defaults": "tsx projects/gerenteagentes/src/scripts/prompt-defaults.ts --export"

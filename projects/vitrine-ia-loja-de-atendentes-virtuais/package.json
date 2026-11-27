@@ -1,0 +1,15 @@
+{
+  "name": "@biblioteca-global/project-vitrine-ia-loja-de-atendentes-virtuais",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Projeto Vitrine IA — loja de atendentes virtuais. Plano macro #10 (posição 1/11): modelo de dados com as 10 entidades do ESPEC-CRUD.",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@biblioteca-global/schema-tools": "*",
+    "@biblioteca-global/shared": "*"
+  }
+}
