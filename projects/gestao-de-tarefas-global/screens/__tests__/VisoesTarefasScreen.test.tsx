@@ -16,6 +16,10 @@ import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 import VisoesTarefasScreen from "../VisoesTarefasScreen"
+import {
+  LIMITE_CONTEUDO_PAGINA_XS,
+  esperarSemMinWidthForaDeMedia,
+} from "./responsivo"
 
 // Mock do useApi (bundle fake) — a tela não fala HTTP direto.
 vi.mock("../../../../apps/web/src/hooks/useApi", () => ({
@@ -280,4 +284,20 @@ it("lista vazia: estado vazio sem erro", async () => {
   )
 
   expect(await screen.findByTestId("visoes-vazio")).toBeInTheDocument()
+})
+
+it("auditoria 360px: agrupamentos + drill sem conteúdo com min-width fixo acima do viewport", async () => {
+  const user = userEvent.setup()
+  render(
+    <BibliotecaThemeProvider>
+      <VisoesTarefasScreen />
+    </BibliotecaThemeProvider>,
+  )
+  await screen.findByTestId("visoes-secao-areas")
+  esperarSemMinWidthForaDeMedia(document.body, LIMITE_CONTEUDO_PAGINA_XS)
+
+  // Drill aberto (cartões de tarefa + filtros rápidos) também cabe em 360px.
+  await user.click(screen.getByTestId("visoes-grupo-areaId-11"))
+  await screen.findByTestId("visoes-tarefa-101")
+  esperarSemMinWidthForaDeMedia(document.body, LIMITE_CONTEUDO_PAGINA_XS)
 })
