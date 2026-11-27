@@ -1755,11 +1755,21 @@ export class MySqlDevelopmentExecutionRepository {
         LIMIT 25 FOR UPDATE`,
     )
     for (const row of rows) {
+      // RAIZ DE CORRELAÇÃO PRÓPRIA (incidente tarefa 1070, 27/11/2026):
+      // um wake de capacidade é uma retomada INDEPENDENTE da tarefa acordada —
+      // não uma continuação da cadeia da tarefa que liberou a vaga. Herdar
+      // `source.correlationId` fazia a raiz de uma tarefa vazar para outra via
+      // ping-pong de vagas (A libera vaga → acorda B com raiz de A; B completa
+      // → acorda A com raiz vazada de A). Quando `subtaskExecutionCorrelation`
+      // recomponha `<raiz>:sub:<id>` na tarefa acordada, a chave colidia com a
+      // primeira SUBTASK_EXECUTION_REQUESTED já publicada daquela subtarefa →
+      // ER_DUP_ENTRY → rollback → wake morto → tarefa órfã na fila para sempre
+      // (sem wait-queue, sem mensagem viva). Cada wake gera raiz nova (seu
+      // próprio messageId); a rastreabilidade da liberação fica em causationId.
       const message = createQueueMessage({
         type: 'TASK_READY_FOR_PROGRAMMING',
         taskId: String(row.task_id),
         executionId: `exec-capacity-${row.task_id}-${Date.now()}`,
-        correlationId: source.correlationId ?? source.messageId,
         causationId: source.messageId,
         payload: { reason: 'development_capacity_released' },
       })
