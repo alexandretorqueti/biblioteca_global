@@ -3,6 +3,7 @@ import { parseAnalystReply, type AnalysisOutcome } from '../analysis/AnalystRepl
 import type { AnalystConsole, AnalystSession, ConsoleAnalystRunner } from '../analysis/ConsoleAnalystRunner.js'
 import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskSnapshot } from './TaskCoordinator.js'
 import type { TaskEventSink } from './TaskEventRecorder.js'
+import type { AnalysisRecoveryFailureSink } from './AnalysisFailureBlocker.js'
 import type { MotorActivityGate } from '../queue/MotorActivityGate.js'
 
 interface RecoveryRow extends RowDataPacket {
@@ -34,6 +35,13 @@ export interface AnalysisSessionRecoveryConfig {
    */
   publishTaskResume?: (taskId: string, executionId: string) => Promise<void>
   taskEvents?: TaskEventSink
+  /**
+   * Bloqueio persistente da falha terminal de recuperação (incidente 1137):
+   * sem ele, a tarefa ficava em limbo após `analysis_recovery_failed` — nem
+   * analisada, nem bloqueada. Quando presente, `failRecovery` cria o bloqueio
+   * `analysis_recovery_failed` (idempotente, com TASK_BLOCKED no monitor).
+   */
+  recoveryFailureBlocker?: AnalysisRecoveryFailureSink
   intervalMs?: number
   leaseTtlMs?: number
   /**
@@ -325,6 +333,23 @@ export class AnalysisSessionRecoveryReconciler {
       closeReason,
       error: message.slice(0, 1800),
     })
+
+    // Incidente 1137 (2026-11-27): a falha terminal de recuperação precisa
+    // virar bloqueio visível/resolúvel (estação Atenção) em vez de limbo.
+    // O evento acima é registrado independentemente; a criação do bloqueio é
+    // defensiva — falhar aqui não pode derrubar o ciclo do reconciliador.
+    if (this.config.recoveryFailureBlocker) {
+      try {
+        await this.config.recoveryFailureBlocker.blockForAnalysisRecoveryFailure(taskId, {
+          sessionId: row.session_id,
+          executionId: row.analysis_execution_id ?? null,
+          closeReason,
+          error: message,
+        })
+      } catch (blockError) {
+        console.error(`[Motor v3] Falha ao criar bloqueio de recovery_failed para task=${taskId}:`, this.errorMessage(blockError))
+      }
+    }
   }
 
   private async record(taskId: string, event: string, payload: Record<string, unknown>): Promise<void> {

@@ -59,5 +59,11 @@ export {
 } from './ResumeTerminalGuard.js'
 export { inspectCancelTerminalState, buildAlreadyTerminalCancelResponse, type CancelTerminalState, type CancelTerminalGuardQueryable } from './CancelTerminalGuard.js'
 export { MySqlTaskEventRecorder, type TaskEventSink } from './TaskEventRecorder.js'
-export { MySqlAnalysisFailureBlocker, type AnalysisFailureSink, type AnalysisFailureInfo } from './AnalysisFailureBlocker.js'
+export {
+  MySqlAnalysisFailureBlocker,
+  type AnalysisRecoveryFailureInfo,
+  type AnalysisRecoveryFailureSink,
+  type AnalysisFailureSink,
+  type AnalysisFailureInfo,
+} from './AnalysisFailureBlocker.js'
 export { SanitizeSessionService, type SanitizeSessionResult, type ConsoleArchiver } from './SanitizeSessionService.js'

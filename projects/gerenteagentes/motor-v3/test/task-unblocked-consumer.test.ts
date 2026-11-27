@@ -232,6 +232,27 @@ describe('TaskUnblockedConsumer', () => {
       .toMatchObject({ action: 'analysis_resume_enqueued' })
   })
 
+  // Incidente 1137 (2026-11-27): bloqueio 'analysis_recovery_failed' (falha
+  // terminal da recuperação de sessão de análise) retoma pelo MESMO caminho
+  // canônico de 'analysis_failed' — TASK_RESUME_REQUESTED para o
+  // TaskCoordinator reabrir a análise.
+  it('analysis_recovery_failed: enfileira TASK_RESUME_REQUESTED no mesmo ramo de analysis_failed', async () => {
+    const env = fakeEnvironment()
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'analysis_recovery_failed' }))
+
+    const resumes = env.outbox('TASK_RESUME_REQUESTED')
+    expect(resumes).toHaveLength(1)
+    expect(resumes[0].params[3]).toBe('task-p1-886')
+    expect(JSON.parse(resumes[0].params[5] as string)).toMatchObject({ resumedBy: 'monitor' })
+    const resumed = env.events.find(e => e.evento === 'task_resumed_by_monitor')!
+    expect(resumed.payload).toMatchObject({ blockReason: 'analysis_recovery_failed', action: 'analysis_resume_enqueued' })
+    // Nenhum outro fluxo (deploy/verificação/programação) é acionado.
+    expect(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')).toHaveLength(0)
+    expect(env.outbox('SUBTASK_VERIFICATION_REQUESTED')).toHaveLength(0)
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(0)
+  })
+
   it('subtask_verification_failed: reabre subtarefa e enfileira verificação na mesma transação', async () => {
     const env = fakeEnvironment({ verificationSubtasks: [{ id: 901, seq: 3 }] })
 
