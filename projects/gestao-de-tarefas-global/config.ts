@@ -59,6 +59,29 @@ const configBase: GeradorSistemaConfig = {
   app: { name: "Gestão de Tarefas Global", logo: "viewlist" },
   groups: [
     // ========================================================================
+    // INÍCIO — rota inicial (macro #9, subtarefa 1)
+    // GeradorSistema usa firstPath = groups[0].items[0].path como rota inicial,
+    // então tablet/quiosque caem em "Minhas tarefas" ao entrar no projeto.
+    // Tela custom: DashboardScreen (registry: screens/registry.ts).
+    // ========================================================================
+    {
+      id: "inicio",
+      label: "Início",
+      items: [
+        {
+          id: "dashboard",
+          label: "Início",
+          path: "dashboard",
+          icon: "home",
+          screen: {
+            kind: "custom",
+            componentId: "gestao-de-tarefas-global-dashboard",
+          },
+        },
+      ],
+    },
+
+    // ========================================================================
     // CADASTROS
     // ========================================================================
     {

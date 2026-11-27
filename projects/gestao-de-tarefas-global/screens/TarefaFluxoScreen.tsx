@@ -499,7 +499,10 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
       <Paper sx={{ p: 2 }}>
         <Stack spacing={1}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-            <Typography variant="h6" sx={{ flexGrow: 1 }}>
+            <Typography
+              variant="h6"
+              sx={{ flexGrow: 1, minWidth: 0, overflowWrap: "anywhere" }}
+            >
               {tarefa?.titulo ?? `Tarefa #${tarefaId}`}
             </Typography>
             <Chip label={statusInfo.label} color={statusInfo.cor} size="small" />
@@ -533,7 +536,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
 
           {/* Ações de fluxo — validação de estado é do backend; aqui só
               refletemos os terminais. */}
-          <Stack direction="row" spacing={1} sx={{ pt: 0.5 }}>
+          <Stack direction="row" spacing={1} sx={{ pt: 0.5 }} flexWrap="wrap" useFlexGap>
             <Button
               variant="contained"
               color="primary"
@@ -661,9 +664,11 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
                 minRows={2}
                 fullWidth
                 disabled={chatEnviando}
+                sx={{ minWidth: 0 }}
               />
               <Button
                 variant="contained"
+                sx={{ flexShrink: 0 }}
                 disabled={chatTexto.trim().length === 0 || chatEnviando}
                 onClick={() => void enviarMensagem()}
                 startIcon={chatEnviando ? <CircularProgress size={16} color="inherit" /> : <SendRounded />}
@@ -759,6 +764,8 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
       {/* Dialog DELEGAR — colaboradores ativos da organização */}
       <Dialog
         open={dialog === "delegar"}
+        fullWidth
+        maxWidth="sm"
         onClose={() => {
           if (enviando !== null) return
           setDialog(null)
@@ -766,7 +773,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
       >
         <DialogTitle>Delegar tarefa</DialogTitle>
         <DialogContent>
-          <Stack spacing={2} sx={{ minWidth: 320, pt: 1 }}>
+          <Stack spacing={2} sx={{ minWidth: { xs: 0, sm: 320 }, pt: 1 }}>
             <Typography variant="body2" color="text.secondary">
               Escolha o novo responsável (colaborador ativo da organização). A
               delegação fica registrada no histórico.
@@ -819,6 +826,8 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
       {/* Dialog DEVOLVER — 3 sabores + mensagem obrigatória */}
       <Dialog
         open={dialog === "devolver"}
+        fullWidth
+        maxWidth="sm"
         onClose={() => {
           if (enviando !== null) return
           setDialog(null)
@@ -826,7 +835,7 @@ export default function TarefaFluxoScreen(props: CustomScreenProps): ReactNode {
       >
         <DialogTitle>Devolver tarefa</DialogTitle>
         <DialogContent>
-          <Stack spacing={2} sx={{ minWidth: 340, pt: 1 }}>
+          <Stack spacing={2} sx={{ minWidth: { xs: 0, sm: 340 }, pt: 1 }}>
             <FormControl component="fieldset">
               <RadioGroup
                 value={devolverSabor}

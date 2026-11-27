@@ -20,6 +20,14 @@ const DEPLOY_BLOCK_REASONS = new Set([
 const SUBTASK_VERIFICATION_BLOCK_REASON = 'subtask_verification_failed'
 
 /**
+ * Falha terminal da recuperação de sessão de análise (incidente 1137,
+ * 2026-11-27): o bloqueio criado pelo AnalysisSessionRecoveryReconciler é
+ * retomado pelo mesmo caminho canônico de `analysis_failed` —
+ * TASK_RESUME_REQUESTED para o TaskCoordinator reabrir a análise.
+ */
+const ANALYSIS_RECOVERY_FAILED_BLOCK_REASON = 'analysis_recovery_failed'
+
+/**
  * Motivos de falha terminal de subtarefa (tarefa 1043): `worker_exhausted`
  * marca a subtarefa como 'failed' (completeExecution) e `subtask_terminal_failure`
  * como 'blocked' (SubtaskTerminalFailureBlocker). Resolver o bloqueio precisa
@@ -58,8 +66,9 @@ type TerminalReopenOutcome =
  * Consome `TASK_UNBLOCKED` e devolve a tarefa ao curso normal:
  * - bloqueios de deploy → pedidos `failed` voltam a `pending` e um
  *   `DEPLOY_BATCH_DISPATCH_REQUESTED` é enfileirado (mesma transação);
- * - `analysis_failed` → `TASK_RESUME_REQUESTED` para o TaskCoordinator
- *   reabrir a análise (claim atômico já protege contra duplicidade);
+ * - `analysis_failed` / `analysis_recovery_failed` → `TASK_RESUME_REQUESTED`
+ *   para o TaskCoordinator reabrir a análise (claim atômico já protege contra
+ *   duplicidade);
  * - `subtask_verification_failed` → subtarefas bloqueadas voltam a
  *   `verifying` e recebem `SUBTASK_VERIFICATION_REQUESTED`;
  * - `worker_exhausted`/`subtask_terminal_failure`/
@@ -103,7 +112,7 @@ export class TaskUnblockedConsumer {
         await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'deploy_requeued', dispatched })
         return
       }
-      if (reason === 'analysis_failed') {
+      if (reason === 'analysis_failed' || reason === ANALYSIS_RECOVERY_FAILED_BLOCK_REASON) {
         await this.enqueueResumeAnalysis(message, databaseTaskId)
         await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'analysis_resume_enqueued' })
         return

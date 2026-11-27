@@ -132,6 +132,7 @@ describe('ConsoleHttpApi', () => {
     await expect(api.getSessionStatus(session)).resolves.toEqual({
       isComplete: false,
       activity: { repeatedToolCalls: 1, fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/) },
+      laneBusy: true,
     })
     await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
   })
@@ -271,7 +272,7 @@ describe('ConsoleHttpApi', () => {
     const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
 
     await expect(api.getSessionStatus({ sessionId: 's5', sessionKey: 'agent:a:k5', agentId: 'a' }))
-      .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 5 } })
+      .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 5 }, laneBusy: true })
   })
 
   it('ignora narrações variáveis e detecta chamadas tool reais repetidas como no incidente 815', async () => {
@@ -287,7 +288,31 @@ describe('ConsoleHttpApi', () => {
     const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
 
     await expect(api.getSessionStatus({ sessionId: 's-loop-815', sessionKey: 'agent:a:loop-815', agentId: 'a' }))
-      .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 6 } })
+      .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 6 }, laneBusy: true })
+  })
+
+  // Incidente 1137 (2026-11-27): a retomada de análise precisa saber quando a
+  // lane da sessão está ocupada para adiar o retry em vez de injetar mensagem
+  // no meio do run ativo (EmbeddedAttemptSessionTakeoverError). O sinal já era
+  // detectado internamente via hasActiveRun e descartado.
+  it('propaga laneBusy quando o describe expõe run ativo (lane ocupada)', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'running', hasActiveRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's-lane-busy', sessionKey: 'agent:a:lane-busy', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false, activity: { repeatedToolCalls: 0 }, laneBusy: true })
+  })
+
+  it('não expõe laneBusy quando não há run ativo (contrato opcional preservado)', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'idle', hasActiveRun: false }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    const status = await api.getSessionStatus({ sessionId: 's-lane-free', sessionKey: 'agent:a:lane-free', agentId: 'a' })
+    expect(status.laneBusy).toBeUndefined()
   })
 
   it('interrompe o run ativo pelo endpoint de abort do Console', async () => {
@@ -406,7 +431,7 @@ describe('ConsoleHttpApi', () => {
     const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
 
     await expect(api.getSessionStatus({ sessionId: 's-active', sessionKey: 'agent:a:active', agentId: 'a' }))
-      .resolves.toEqual({ isComplete: false, activity: { repeatedToolCalls: 0 } })
+      .resolves.toEqual({ isComplete: false, activity: { repeatedToolCalls: 0 }, laneBusy: true })
   })
 
   it('não recupera mensagem de erro do run atual como resposta utilizável', async () => {

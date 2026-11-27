@@ -49,10 +49,15 @@ export class ConsoleHttpApi implements AnalystConsole {
     const lowerState = String(status.state ?? '').toLowerCase()
     const stopped = stoppedWithoutAnswer.has(lowerStatus) || stoppedWithoutAnswer.has(lowerState)
     const failed = terminalFailure.has(lowerStatus) || terminalFailure.has(lowerState)
+    // Sinal de lane ocupada (incidente 1137): o describe já expõe `hasActiveRun`
+    // e a informação era descartada. Consumidores de retomada usam `laneBusy`
+    // para adiar o retry em vez de injetar mensagem no meio do run ativo — o
+    // que provocava EmbeddedAttemptSessionTakeoverError em agente congestionado.
+    const laneSignal = status.hasActiveRun === true ? { laneBusy: true } : {}
     const complete = !failed && (stopped || status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false || status.endedAt !== undefined)
     if (!complete && !failed) {
       const history = await this.history(session)
-      return { isComplete: false, activity: this.activity(history.messages ?? []) }
+      return { isComplete: false, activity: this.activity(history.messages ?? []), ...laneSignal }
     }
     const history = await this.history(session)
     const marker = this.pendingResponses.get(this.sessionKey(session))
@@ -65,7 +70,7 @@ export class ConsoleHttpApi implements AnalystConsole {
     if (failed) {
       // Run ativo vence o flag terminal: o describe pode expor `failed`
       // obsoleto enquanto a nova execução já está em andamento.
-      if (status.hasActiveRun === true) return { isComplete: false, activity: this.activity(messages) }
+      if (status.hasActiveRun === true) return { isComplete: false, activity: this.activity(messages), laneBusy: true }
       // Procedência da falha (incidente task-p2-1060): `endedAt` do run failed
       // posterior ao envio prova que quem falhou foi o run ATUAL — a supressão
       // de falha obsoleta não se aplica e o motor não pode esperar até o
@@ -89,7 +94,7 @@ export class ConsoleHttpApi implements AnalystConsole {
         // uma janela curta após o envio. Depois dela, sem atividade nova do
         // agente, a falha terminal é real e precisa ser consumida; caso
         // contrário o marker ficaria retido indefinidamente.
-        if (hasAgentActivityAfterSend || withinStaleFailedGrace) return { isComplete: false }
+        if (hasAgentActivityAfterSend || withinStaleFailedGrace) return { isComplete: false, ...laneSignal }
       }
       // Falha terminal do run atual que AINDA produziu resposta final utilizável
       // (incidente task-p2-1060: stopReason=length — JSON do analista truncado
@@ -119,7 +124,7 @@ export class ConsoleHttpApi implements AnalystConsole {
     }
     // `timeout` com run ativo é flag de ciclo anterior: enquanto uma execução
     // nova está em andamento, não se declara conclusão (mesma regra de `failed`).
-    if (stopped && status.hasActiveRun === true) return { isComplete: false, activity: this.activity(messages) }
+    if (stopped && status.hasActiveRun === true) return { isComplete: false, activity: this.activity(messages), laneBusy: true }
     // Em idle o Console pode estar entre o envio e a criação da resposta. Já
     // um estado terminal (`done`/`endedAt`) sem assistente final significa que
     // o agente parou após ferramenta: o reconciliador precisa vê-lo como
@@ -132,9 +137,9 @@ export class ConsoleHttpApi implements AnalystConsole {
       const hasAgentActivityAfterSend = messages.some(message =>
         message.role !== 'user' && this.isResponseAfter(message, marker),
       )
-      if (marker && !hasAgentActivityAfterSend) return { isComplete: false }
+      if (marker && !hasAgentActivityAfterSend) return { isComplete: false, ...laneSignal }
       const terminalCompleted = stopped || status.status === 'done' || status.state === 'done' || status.endedAt !== undefined
-      return terminalCompleted ? { isComplete: true } : { isComplete: false }
+      return terminalCompleted ? { isComplete: true } : { isComplete: false, ...laneSignal }
     }
     this.pendingResponses.delete(this.sessionKey(session))
     return { isComplete: true, lastResponse: await this.resolveFullContent(session, assistant) }

@@ -230,7 +230,17 @@ export function NotificacoesSino({
         onClose={() => setAnchor(null)}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
-        slotProps={{ paper: { sx: { width: 380, maxHeight: 480 } } }}
+        slotProps={{
+          paper: {
+            sx: {
+              width: 380,
+              // 360px: nunca estourar a largura do viewport (comportamento
+              // idêntico em telas ≥ 404px, onde 380 já cabe).
+              maxWidth: "calc(100vw - 24px)",
+              maxHeight: 480,
+            },
+          },
+        }}
         data-testid="sino-popover"
       >
         <Box sx={{ px: 2, py: 1.5, display: "flex", alignItems: "center", justifyContent: "space-between" }}>

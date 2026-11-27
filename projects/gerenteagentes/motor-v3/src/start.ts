@@ -827,6 +827,10 @@ async function start() {
     }
     analysisSessionRecovery = new AnalysisSessionRecoveryReconciler(pool, repository, analyst, consoleApi, {
       taskEvents,
+      // Incidente 1137 (2026-11-27): falha terminal de recuperação vira bloqueio
+      // 'analysis_recovery_failed' (estação Atenção + TASK_BLOCKED no monitor),
+      // retomado pelo caminho canônico no TaskUnblockedConsumer.
+      recoveryFailureBlocker: new MySqlAnalysisFailureBlocker(pool),
       intervalMs: Number(process.env.MOTOR_ANALYSIS_RECOVERY_INTERVAL_MS || 300000),
       leaseTtlMs: Number(process.env.MOTOR_ANALYSIS_LEASE_TTL_MS || 90000),
       motorActivityGate,

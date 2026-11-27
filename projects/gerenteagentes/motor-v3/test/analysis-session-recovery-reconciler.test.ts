@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import type { Pool } from 'mysql2/promise'
-import { AnalysisSessionRecoveryReconciler } from '../src/coordinator/index.js'
+import { AnalysisSessionRecoveryReconciler, MySqlAnalysisFailureBlocker } from '../src/coordinator/index.js'
 import type { TaskCoordinatorRepository, TaskSnapshot } from '../src/coordinator/TaskCoordinator.js'
 import type { AnalystConsole, ConsoleAnalystRunner } from '../src/analysis/ConsoleAnalystRunner.js'
 import type { MotorActivityGate } from '../src/queue/index.js'
@@ -354,5 +354,333 @@ describe('AnalysisSessionRecoveryReconciler', () => {
     expect(queries.some(query => query.sql.includes("close_reason='analysis_recovered'"))).toBe(false)
     expect(runner.resume).not.toHaveBeenCalled()
     expect(publishTaskReady).not.toHaveBeenCalled()
+  })
+
+  // Incidente 1137 (2026-11-27): duas recuperações morreram no Console com
+  // EmbeddedAttemptSessionTakeoverError em lane congestionada e, após 2x
+  // analysis_recovery_failed, a tarefa ficou em limbo — nem analisada, nem
+  // bloqueada. A falha terminal agora vira bloqueio persistente com contagem
+  // de tentativas no excerpt + TASK_BLOCKED no outbox do monitor.
+  describe('bloqueio explícito na falha terminal de recuperação (incidente 1137)', () => {
+    /** Pool fake que atende o MySqlAnalysisFailureBlocker real. */
+    function blockerPool(options: { eventCount?: number; failureRows?: number; insertAffectedRows?: number } = {}) {
+      const queries: Array<{ sql: string; params: unknown[] }> = []
+      const connection = {
+        beginTransaction: vi.fn(async () => {}),
+        commit: vi.fn(async () => {}),
+        rollback: vi.fn(async () => {}),
+        release: vi.fn(),
+        query: vi.fn(async (sql: string, params: unknown[] = []) => {
+          const normalized = String(sql).replace(/\s+/g, ' ').trim()
+          queries.push({ sql: normalized, params })
+          if (/SELECT t\.id AS tarefa_id/.test(normalized)) {
+            return [[{ tarefa_id: 868, event_count: options.eventCount ?? 2, failure_rows: options.failureRows ?? 0 }]]
+          }
+          if (/INSERT INTO bloqueios/.test(normalized)) {
+            return [{ affectedRows: options.insertAffectedRows ?? 1 }]
+          }
+          if (/SELECT b\.id, b\.tarefa_id FROM bloqueios/.test(normalized)) {
+            return [[{ id: 91, tarefa_id: 868 }]]
+          }
+          return [{ affectedRows: 1 }]
+        }),
+      }
+      const pool = { getConnection: vi.fn(async () => connection) } as unknown as Pool
+      return { pool, connection, queries }
+    }
+
+    function failingReconciler(blocker: unknown, events = { record: vi.fn(async () => undefined) }) {
+      const recoveryPool = {
+        query: vi.fn(async (sql: string) => {
+          const sqlStr = String(sql)
+          if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) return [[recoveryRow]]
+          if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) return [[]]
+          return [{ affectedRows: 1 }]
+        }),
+      } as unknown as Pool
+      const repository = {
+        getTask: vi.fn(async () => task),
+        releaseAnalysisClaim: vi.fn(async () => undefined),
+        claimAnalysis: vi.fn(), persistAnalysis: vi.fn(),
+        acquireAnalysisLease: vi.fn(async () => undefined),
+        heartbeatAnalysisLease: vi.fn(async () => undefined),
+        releaseAnalysisLease: vi.fn(async () => undefined),
+      } as unknown as TaskCoordinatorRepository
+      const runner = { resume: vi.fn(async () => { throw new Error('EmbeddedAttemptSessionTakeoverError: session file changed while embedded prompt lock was released') }) } as unknown as ConsoleAnalystRunner
+      const consoleApi = { getSessionStatus: vi.fn(async () => ({ isComplete: false, isFailed: false })) } as unknown as AnalystConsole
+      const reconciler = new AnalysisSessionRecoveryReconciler(recoveryPool, repository, runner, consoleApi, {
+        taskEvents: events,
+        publishTaskReady: vi.fn(async () => undefined),
+        recoveryFailureBlocker: blocker as never,
+      })
+      return { reconciler, events }
+    }
+
+    it('falha terminal de recuperação cria bloqueio analysis_recovery_failed com contagem de tentativas e TASK_BLOCKED no monitor', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blockerEnv = blockerPool({ eventCount: 2 })
+        const blocker = new MySqlAnalysisFailureBlocker(blockerEnv.pool)
+        const { reconciler, events } = failingReconciler(blocker)
+
+        await expect(reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => expect(events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object)))
+
+        const insert = blockerEnv.queries.find(q => q.sql.includes('INSERT INTO bloqueios'))
+        expect(insert).toBeDefined()
+        expect(insert!.sql).toContain("b.block_reason = 'analysis_recovery_failed'")
+        expect(insert!.sql).toContain('NOT EXISTS')
+        expect(insert!.params[0]).toBe('analysis_recovery_failed')
+        expect(insert!.params[1]).toBe('TASK_RESUME_REQUESTED')
+        const excerpt = JSON.parse(String(insert!.params[2]))
+        expect(excerpt).toMatchObject({
+          sessionId: 55,
+          executionId: 'exec-recovery-868',
+          closeReason: 'analysis_recovery_failed',
+          recoveryAttempts: 2,
+        })
+        expect(excerpt.error).toContain('EmbeddedAttemptSessionTakeoverError')
+
+        // TASK_BLOCKED no outbox motor.monitor na MESMA transação do INSERT.
+        const blocked = blockerEnv.queries.find(q => q.sql.includes('INSERT INTO motor_outbox'))
+        expect(blocked).toBeDefined()
+        expect(blocked!.params[1]).toBe('TASK_BLOCKED')
+        expect(blocked!.params[2]).toBe('motor.monitor')
+        const blockedPayload = JSON.parse(String(blocked!.params[5]))
+        expect(blockedPayload).toMatchObject({ blockReason: 'analysis_recovery_failed', blockCommand: 'TASK_RESUME_REQUESTED', blockId: 91, databaseTaskId: 868 })
+        expect(blockerEnv.connection.commit).toHaveBeenCalledOnce()
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('contagem de tentativas usa motor_agent_session_failures quando a trilha de eventos está vazia', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blockerEnv = blockerPool({ eventCount: 0, failureRows: 3 })
+        const blocker = new MySqlAnalysisFailureBlocker(blockerEnv.pool)
+        const { reconciler } = failingReconciler(blocker)
+
+        await expect(reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => {
+          expect(blockerEnv.queries.some(q => q.sql.includes('INSERT INTO bloqueios'))).toBe(true)
+        })
+        const excerpt = JSON.parse(String(blockerEnv.queries.find(q => q.sql.includes('INSERT INTO bloqueios'))!.params[2]))
+        expect(excerpt.recoveryAttempts).toBe(3)
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('redelivery (bloqueio já ativo) não duplica: INSERT idempotente não emite TASK_BLOCKED', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blockerEnv = blockerPool({ insertAffectedRows: 0 })
+        const blocker = new MySqlAnalysisFailureBlocker(blockerEnv.pool)
+        const { reconciler } = failingReconciler(blocker)
+
+        await expect(reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => {
+          expect(blockerEnv.queries.some(q => q.sql.includes('INSERT INTO bloqueios'))).toBe(true)
+        })
+        expect(blockerEnv.queries.some(q => q.sql.includes('INSERT INTO motor_outbox'))).toBe(false)
+        expect(blockerEnv.connection.commit).toHaveBeenCalledOnce()
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it("closeReason 'recovery_session_failed' (Console informou falha) também gera bloqueio", async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blockerEnv = blockerPool({ eventCount: 1 })
+        const blocker = new MySqlAnalysisFailureBlocker(blockerEnv.pool)
+        const recoveryPool = {
+          query: vi.fn(async (sql: string) => {
+            const sqlStr = String(sql)
+            if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) return [[recoveryRow]]
+            if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) return [[]]
+            return [{ affectedRows: 1 }]
+          }),
+        } as unknown as Pool
+        const repository = {
+          getTask: vi.fn(async () => task),
+          releaseAnalysisClaim: vi.fn(async () => undefined),
+          claimAnalysis: vi.fn(), persistAnalysis: vi.fn(),
+          acquireAnalysisLease: vi.fn(async () => undefined),
+          heartbeatAnalysisLease: vi.fn(async () => undefined),
+          releaseAnalysisLease: vi.fn(async () => undefined),
+        } as unknown as TaskCoordinatorRepository
+        const runner = { resume: vi.fn() } as unknown as ConsoleAnalystRunner
+        const consoleApi = { getSessionStatus: vi.fn(async () => ({ isComplete: false, isFailed: true, error: 'EmbeddedAttemptSessionTakeoverError' })) } as unknown as AnalystConsole
+        const events = { record: vi.fn(async () => undefined) }
+        const reconciler = new AnalysisSessionRecoveryReconciler(recoveryPool, repository, runner, consoleApi, {
+          taskEvents: events,
+          publishTaskReady: vi.fn(async () => undefined),
+          recoveryFailureBlocker: blocker as never,
+        })
+
+        await expect(reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => {
+          const insert = blockerEnv.queries.find(q => q.sql.includes('INSERT INTO bloqueios'))
+          expect(insert).toBeDefined()
+        })
+        const excerpt = JSON.parse(String(blockerEnv.queries.find(q => q.sql.includes('INSERT INTO bloqueios'))!.params[2]))
+        expect(excerpt.closeReason).toBe('recovery_session_failed')
+        expect(excerpt.recoveryAttempts).toBe(1)
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('falha ao criar o bloqueio não derruba o ciclo do reconciliador e o evento continua registrado', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blocker = { blockForAnalysisRecoveryFailure: vi.fn(async () => { throw new Error('MySQL indisponível') }) }
+        const { reconciler, events } = failingReconciler(blocker)
+
+        await expect(reconciler.reconcile()).resolves.toBeUndefined()
+        // O evento é gravado independentemente do bloqueio (ordem no failRecovery).
+        await vi.waitFor(() => expect(events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object)))
+        await vi.waitFor(() => expect(blocker.blockForAnalysisRecoveryFailure).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+          sessionId: 55,
+          executionId: 'exec-recovery-868',
+          closeReason: 'analysis_recovery_failed',
+        })))
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+  })
+
+  // Incidente 1137 (2026-11-27): duas sessões de análise morreram no Console
+  // com EmbeddedAttemptSessionTakeoverError porque a recuperação reutilizou uma
+  // sessão cuja lane estava congestionada (queued_behind_active_work). A
+  // retomada agora consulta o sinal `laneBusy` do getSessionStatus e adia o
+  // ciclo — sem fechar sessão, sem liberar claim e sem queimar tentativa; o
+  // backoff é o próprio timer do reconciliador.
+  describe('adiamento de retomada quando a lane da sessão está ocupada (anti-takeover)', () => {
+    /** Harness compartilhado: pool/repository/runner/console com estado controlável. */
+    function laneHarness(options: {
+      statuses: Array<{ isComplete: boolean; isFailed?: boolean; error?: string; lastResponse?: string; laneBusy?: boolean }>
+      resume?: () => Promise<never> | Promise<unknown>
+      blocker?: { blockForAnalysisRecoveryFailure: ReturnType<typeof vi.fn> }
+    }) {
+      const queries: Array<{ sql: string; params: unknown[] }> = []
+      const pool = {
+        query: vi.fn(async (sql: string, params: unknown[] = []) => {
+          queries.push({ sql: String(sql), params })
+          const sqlStr = String(sql)
+          if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) return [[recoveryRow]]
+          if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) return [[]]
+          return [{ affectedRows: 1 }]
+        }),
+      } as unknown as Pool
+      const repository = {
+        getTask: vi.fn(async () => task),
+        releaseAnalysisClaim: vi.fn(async () => undefined),
+        claimAnalysis: vi.fn(), persistAnalysis: vi.fn(),
+        acquireAnalysisLease: vi.fn(async () => undefined),
+        heartbeatAnalysisLease: vi.fn(async () => undefined),
+        releaseAnalysisLease: vi.fn(async () => undefined),
+      } as unknown as TaskCoordinatorRepository
+      const runner = {
+        resume: vi.fn(options.resume ?? (async () => ({ kind: 'completion', response: 'ok' }) as never)),
+      } as unknown as ConsoleAnalystRunner
+      let statusIndex = 0
+      const consoleApi = {
+        getSessionStatus: vi.fn(async () => options.statuses[Math.min(statusIndex++, options.statuses.length - 1)]),
+      } as unknown as AnalystConsole
+      const events = { record: vi.fn(async () => undefined) }
+      const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+        taskEvents: events,
+        publishTaskReady: vi.fn(async () => undefined),
+        recoveryFailureBlocker: options.blocker as never,
+      })
+      return { queries, repository, runner, consoleApi, events, reconciler }
+    }
+
+    it('lane ocupada adia o ciclo sem retomar, sem fechar a sessão e sem queimar tentativa', async () => {
+      const harness = laneHarness({ statuses: [{ isComplete: false, laneBusy: true }] })
+
+      await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+      await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.objectContaining({
+        sessionId: 55,
+        executionId: 'exec-recovery-868',
+      })))
+
+      // Nada de retomada nem de falha terminal: a tentativa não é consumida.
+      expect(harness.runner.resume).not.toHaveBeenCalled()
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_requested', 'motor', expect.any(Object))
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object))
+      // Claim mantido: releaseAnalysisClaim (fencing do claim) jamais chamado.
+      expect(harness.repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+      // Sessão intacta: nenhum UPDATE de fechamento em analyst_task_sessions.
+      expect(harness.queries.some(query => /UPDATE analyst_task_sessions/.test(query.sql))).toBe(false)
+    })
+
+    it('lane ocupada com failed obsoleto não consome a tentativa (adiamento vence o tratamento de falha)', async () => {
+      // O describe pode expor `failed` do run anterior enquanto um novo run da
+      // lane ainda está ativo; mesmo nesse caso o ciclo apenas adia.
+      const harness = laneHarness({ statuses: [{ isComplete: false, isFailed: true, error: 'EmbeddedAttemptSessionTakeoverError', laneBusy: true }] })
+
+      await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+      await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.any(Object)))
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object))
+      expect(harness.repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+    })
+
+    it('regressão do incidente: 1º ciclo adia sem queimar tentativa; lane esvaziada retoma na mesma sessão e falha terminal vira bloqueio', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blocker = { blockForAnalysisRecoveryFailure: vi.fn(async () => undefined) }
+        const takeover = new Error('EmbeddedAttemptSessionTakeoverError: session file changed while embedded prompt lock was released')
+        // Ciclo 1: lane ocupada. Ciclo 2: lane livre (idle sem run ativo) — a
+        // retomada prossegue e o Console derruba o run com takeover.
+        const harness = laneHarness({
+          statuses: [{ isComplete: false, laneBusy: true }, { isComplete: false }],
+          resume: async () => { throw takeover },
+          blocker,
+        })
+
+        // 1º ciclo: adiamento puro.
+        await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.any(Object)))
+        expect(harness.runner.resume).not.toHaveBeenCalled()
+        expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object))
+
+        // 2º ciclo (backoff do reconciliador): lane esvaziada → retry na mesma sessão.
+        await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => expect(harness.runner.resume).toHaveBeenCalledWith(
+          task,
+          'exec-recovery-868',
+          { sessionId: 'console-55', sessionKey: recoveryRow.session_key, agentId: task.agentId },
+          expect.objectContaining({ phase: 'recovery' }),
+        ))
+
+        // A falha terminal desse retry cai no caminho de bloqueio da subtarefa 1.
+        await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object)))
+        await vi.waitFor(() => expect(blocker.blockForAnalysisRecoveryFailure).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+          sessionId: 55,
+          executionId: 'exec-recovery-868',
+          closeReason: 'analysis_recovery_failed',
+        })))
+        // Apenas um adiamento antes do retry (tentativa não foi queimada no 1º ciclo).
+        const deferrals = harness.events.record.mock.calls.filter(call => call[1] === 'analysis_recovery_deferred_lane_busy')
+        expect(deferrals).toHaveLength(1)
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('run já encerrado sem lane ocupada mantém o comportamento atual (falha terminal imediata)', async () => {
+      const harness = laneHarness({ statuses: [{ isComplete: false, isFailed: true, error: 'Console informou falha' }] })
+
+      await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+      // Sem adiamento: isFailed sem run ativo cai direto em failRecovery.
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.any(Object))
+      await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.objectContaining({ closeReason: 'recovery_session_failed' })))
+      expect(harness.repository.releaseAnalysisClaim).toHaveBeenCalledWith(task.taskId, 'exec-recovery-868')
+    })
   })
 })
