@@ -552,4 +552,135 @@ describe('AnalysisSessionRecoveryReconciler', () => {
       }
     })
   })
+
+  // Incidente 1137 (2026-11-27): duas sessões de análise morreram no Console
+  // com EmbeddedAttemptSessionTakeoverError porque a recuperação reutilizou uma
+  // sessão cuja lane estava congestionada (queued_behind_active_work). A
+  // retomada agora consulta o sinal `laneBusy` do getSessionStatus e adia o
+  // ciclo — sem fechar sessão, sem liberar claim e sem queimar tentativa; o
+  // backoff é o próprio timer do reconciliador.
+  describe('adiamento de retomada quando a lane da sessão está ocupada (anti-takeover)', () => {
+    /** Harness compartilhado: pool/repository/runner/console com estado controlável. */
+    function laneHarness(options: {
+      statuses: Array<{ isComplete: boolean; isFailed?: boolean; error?: string; lastResponse?: string; laneBusy?: boolean }>
+      resume?: () => Promise<never> | Promise<unknown>
+      blocker?: { blockForAnalysisRecoveryFailure: ReturnType<typeof vi.fn> }
+    }) {
+      const queries: Array<{ sql: string; params: unknown[] }> = []
+      const pool = {
+        query: vi.fn(async (sql: string, params: unknown[] = []) => {
+          queries.push({ sql: String(sql), params })
+          const sqlStr = String(sql)
+          if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) return [[recoveryRow]]
+          if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) return [[]]
+          return [{ affectedRows: 1 }]
+        }),
+      } as unknown as Pool
+      const repository = {
+        getTask: vi.fn(async () => task),
+        releaseAnalysisClaim: vi.fn(async () => undefined),
+        claimAnalysis: vi.fn(), persistAnalysis: vi.fn(),
+        acquireAnalysisLease: vi.fn(async () => undefined),
+        heartbeatAnalysisLease: vi.fn(async () => undefined),
+        releaseAnalysisLease: vi.fn(async () => undefined),
+      } as unknown as TaskCoordinatorRepository
+      const runner = {
+        resume: vi.fn(options.resume ?? (async () => ({ kind: 'completion', response: 'ok' }) as never)),
+      } as unknown as ConsoleAnalystRunner
+      let statusIndex = 0
+      const consoleApi = {
+        getSessionStatus: vi.fn(async () => options.statuses[Math.min(statusIndex++, options.statuses.length - 1)]),
+      } as unknown as AnalystConsole
+      const events = { record: vi.fn(async () => undefined) }
+      const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+        taskEvents: events,
+        publishTaskReady: vi.fn(async () => undefined),
+        recoveryFailureBlocker: options.blocker as never,
+      })
+      return { queries, repository, runner, consoleApi, events, reconciler }
+    }
+
+    it('lane ocupada adia o ciclo sem retomar, sem fechar a sessão e sem queimar tentativa', async () => {
+      const harness = laneHarness({ statuses: [{ isComplete: false, laneBusy: true }] })
+
+      await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+      await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.objectContaining({
+        sessionId: 55,
+        executionId: 'exec-recovery-868',
+      })))
+
+      // Nada de retomada nem de falha terminal: a tentativa não é consumida.
+      expect(harness.runner.resume).not.toHaveBeenCalled()
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_requested', 'motor', expect.any(Object))
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object))
+      // Claim mantido: releaseAnalysisClaim (fencing do claim) jamais chamado.
+      expect(harness.repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+      // Sessão intacta: nenhum UPDATE de fechamento em analyst_task_sessions.
+      expect(harness.queries.some(query => /UPDATE analyst_task_sessions/.test(query.sql))).toBe(false)
+    })
+
+    it('lane ocupada com failed obsoleto não consome a tentativa (adiamento vence o tratamento de falha)', async () => {
+      // O describe pode expor `failed` do run anterior enquanto um novo run da
+      // lane ainda está ativo; mesmo nesse caso o ciclo apenas adia.
+      const harness = laneHarness({ statuses: [{ isComplete: false, isFailed: true, error: 'EmbeddedAttemptSessionTakeoverError', laneBusy: true }] })
+
+      await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+      await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.any(Object)))
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object))
+      expect(harness.repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+    })
+
+    it('regressão do incidente: 1º ciclo adia sem queimar tentativa; lane esvaziada retoma na mesma sessão e falha terminal vira bloqueio', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        const blocker = { blockForAnalysisRecoveryFailure: vi.fn(async () => undefined) }
+        const takeover = new Error('EmbeddedAttemptSessionTakeoverError: session file changed while embedded prompt lock was released')
+        // Ciclo 1: lane ocupada. Ciclo 2: lane livre (idle sem run ativo) — a
+        // retomada prossegue e o Console derruba o run com takeover.
+        const harness = laneHarness({
+          statuses: [{ isComplete: false, laneBusy: true }, { isComplete: false }],
+          resume: async () => { throw takeover },
+          blocker,
+        })
+
+        // 1º ciclo: adiamento puro.
+        await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.any(Object)))
+        expect(harness.runner.resume).not.toHaveBeenCalled()
+        expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object))
+
+        // 2º ciclo (backoff do reconciliador): lane esvaziada → retry na mesma sessão.
+        await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+        await vi.waitFor(() => expect(harness.runner.resume).toHaveBeenCalledWith(
+          task,
+          'exec-recovery-868',
+          { sessionId: 'console-55', sessionKey: recoveryRow.session_key, agentId: task.agentId },
+          expect.objectContaining({ phase: 'recovery' }),
+        ))
+
+        // A falha terminal desse retry cai no caminho de bloqueio da subtarefa 1.
+        await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object)))
+        await vi.waitFor(() => expect(blocker.blockForAnalysisRecoveryFailure).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+          sessionId: 55,
+          executionId: 'exec-recovery-868',
+          closeReason: 'analysis_recovery_failed',
+        })))
+        // Apenas um adiamento antes do retry (tentativa não foi queimada no 1º ciclo).
+        const deferrals = harness.events.record.mock.calls.filter(call => call[1] === 'analysis_recovery_deferred_lane_busy')
+        expect(deferrals).toHaveLength(1)
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('run já encerrado sem lane ocupada mantém o comportamento atual (falha terminal imediata)', async () => {
+      const harness = laneHarness({ statuses: [{ isComplete: false, isFailed: true, error: 'Console informou falha' }] })
+
+      await expect(harness.reconciler.reconcile()).resolves.toBeUndefined()
+      // Sem adiamento: isFailed sem run ativo cai direto em failRecovery.
+      expect(harness.events.record).not.toHaveBeenCalledWith(task.taskId, 'analysis_recovery_deferred_lane_busy', 'motor', expect.any(Object))
+      await vi.waitFor(() => expect(harness.events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.objectContaining({ closeReason: 'recovery_session_failed' })))
+      expect(harness.repository.releaseAnalysisClaim).toHaveBeenCalledWith(task.taskId, 'exec-recovery-868')
+    })
+  })
 })

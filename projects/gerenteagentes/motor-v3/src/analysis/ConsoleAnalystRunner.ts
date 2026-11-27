@@ -40,6 +40,18 @@ export interface ConsoleSessionStatus {
   lastResponse?: string
   error?: string
   activity?: { fingerprint?: string; repeatedToolCalls: number }
+  /**
+   * Lane da sessão ocupada: o Console expõe um run ainda em execução
+   * (`hasActiveRun === true`). Sinal já detectado internamente por
+   * `getSessionStatus` e antes descartado. Consumidores de retomada (ex.:
+   * AnalysisSessionRecoveryReconciler) NÃO devem enviar mensagem enquanto a
+   * lane está ocupada: em agente congestionado (queued_behind_active_work) o
+   * novo prompt no meio do run ativo provoca EmbeddedAttemptSessionTakeoverError
+   * ("session file changed while embedded prompt lock was released") e mata a
+   * sessão de recuperação (incidente 1137, 2026-11-27). Campo opcional: a
+   * ausência equivale a "lane livre" para consumidores existentes.
+   */
+  laneBusy?: boolean
 }
 
 export interface AnalystSession {

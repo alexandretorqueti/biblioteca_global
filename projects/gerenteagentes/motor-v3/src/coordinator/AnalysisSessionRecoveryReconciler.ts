@@ -251,6 +251,24 @@ export class AnalysisSessionRecoveryReconciler {
           console.warn(`[Motor v3] Resultado recuperado inválido da sessão ${row.session_id}:`, this.errorMessage(error))
         }
       }
+      // Incidente 1137 (2026-11-27): lane ocupada = run ainda em execução na
+      // sessão. Enviar mensagem de retomada nesse momento provoca
+      // EmbeddedAttemptSessionTakeoverError em agente congestionado e mata a
+      // recuperação. O ciclo é adiado sem fechar a sessão, sem liberar o claim
+      // e sem registrar analysis_recovery_failed (tentativa não queimada); o
+      // backoff é o próprio timer do reconciliador
+      // (MOTOR_ANALYSIS_RECOVERY_INTERVAL_MS), que reavaliará a lane no próximo
+      // ciclo. A falha reportada junto com lane ocupada pode ser obsoleta do
+      // run anterior: por isso o adiamento também precede o tratamento de
+      // `isFailed`.
+      if (status.laneBusy === true) {
+        await this.record(taskId, 'analysis_recovery_deferred_lane_busy', {
+          sessionId: row.session_id,
+          executionId: row.analysis_execution_id,
+          reason: 'console_run_active',
+        })
+        return
+      }
       if (status.isFailed) {
         await this.failRecovery(row, new Error(status.error ?? 'Console informou falha'), 'recovery_session_failed')
         return
