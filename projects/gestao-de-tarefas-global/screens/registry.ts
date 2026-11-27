@@ -10,6 +10,9 @@
  */
 import type { CustomScreenComponent } from "@biblioteca-global/ui"
 
+import DashboardScreen, {
+  componentId as dashboardComponentId,
+} from "./DashboardScreen"
 import TarefaFluxoScreen, {
   componentId as tarefaFluxoComponentId,
 } from "./TarefaFluxoScreen"
@@ -18,6 +21,7 @@ import VisoesTarefasScreen, {
 } from "./VisoesTarefasScreen"
 
 export const customScreens: Record<string, CustomScreenComponent> = {
+  [dashboardComponentId]: DashboardScreen,
   [tarefaFluxoComponentId]: TarefaFluxoScreen,
   [visoesTarefasComponentId]: VisoesTarefasScreen,
 }
