@@ -40,6 +40,13 @@ interface TaskRow extends RowDataPacket {
   analysis_started_at: Date | string | null
   analysis_execution_id: string | null
   projeto_id: number | null
+  /**
+   * Presença de linha em `projeto_motor_config` (`pmc.id IS NOT NULL`).
+   * Opcional: SELECTs/fixtures que não projetam a coluna deixam o campo
+   * ausente e o snapshot permanece sem `motorConfigPresent` (comportamento
+   * legado).
+   */
+  motor_config_present?: number | string | bigint | null
   auto_start: number | boolean
   setup_status: string | null
   terminal_status: string | null
@@ -86,7 +93,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     const [rows] = await this.pool.query<TaskRow[]>(`
       SELECT
         t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, pmc.project_layout, t.paused_at,
-        t.auto_start, pc.setup_status,
+        t.auto_start, pc.setup_status, t.projeto_id, pmc.id IS NOT NULL AS motor_config_present,
         t.depends_on_task_id,
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agente_id,
         pc.slug AS project_slug,
@@ -554,12 +561,14 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     const [rows] = await connection.query<TaskRow[]>(`
       SELECT
         t.id, t.external_id, t.projeto_id, t.paused_at, t.auto_start, pc.setup_status,
+        pmc.id IS NOT NULL AS motor_config_present,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
           WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count
       FROM tarefas t
       LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+      LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
       LIMIT 1
@@ -777,6 +786,10 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       analysisStartedAt: row.analysis_started_at ? new Date(row.analysis_started_at).toISOString() : null,
       analysisExecutionId: row.analysis_execution_id ? String(row.analysis_execution_id) : null,
       subtaskCount: Number(row.subtask_count ?? 0),
+      // Projeção opcional (incidente 27/11): colunas ausentes em SELECTs/
+      // fixtures legados NÃO devem materializar campos no snapshot.
+      ...(row.projeto_id !== undefined ? { projetoId: row.projeto_id === null ? null : Number(row.projeto_id) } : {}),
+      ...(row.motor_config_present !== undefined ? { motorConfigPresent: Number(row.motor_config_present) > 0 } : {}),
     }
   }
 

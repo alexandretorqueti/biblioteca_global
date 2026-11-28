@@ -68,9 +68,12 @@ describe('MySqlAnalysisFailureBlocker (incidente 862, item 2)', () => {
     const insert = queries[0]
     expect(insert.sql).toContain('INSERT INTO bloqueios')
     expect(insert.sql).toContain('NOT EXISTS')
-    expect(insert.sql).toContain("block_reason = 'analysis_failed'")
+    // Razão parametrizada (task-p2-1149 subtarefa 2): default 'analysis_failed'
+    // no valor do INSERT e no dedupe NOT EXISTS.
+    expect(insert.sql).toContain('b.block_reason = ?')
     expect(insert.params[0]).toBe('analysis_failed')
-    expect(insert.params[1]).toBe('TASK_RESUME_REQUESTED')
+    expect(insert.params).toEqual(expect.arrayContaining(['analysis_failed', 'TASK_RESUME_REQUESTED']))
+    expect(insert.params.filter(p => p === 'analysis_failed')).toHaveLength(2)
     const excerpt = JSON.parse(insert.params[2] as string)
     expect(excerpt).toMatchObject({ attempt: 3, error: 'Console indisponível' })
   })
@@ -80,7 +83,8 @@ describe('MySqlAnalysisFailureBlocker (incidente 862, item 2)', () => {
     await new MySqlAnalysisFailureBlocker(pool).blockForAnalysisFailure('862', { executionId: 'e', attempt: 3, error: 'x' })
 
     expect(queries[0].sql).toContain('(t.external_id = ? OR CAST(t.id AS CHAR) = ?)')
-    expect(queries[0].params.slice(-2)).toEqual(['862', '862'])
+    // Ordem: valores (reason, command, excerpt) → WHERE (id, id) → ? da subconsulta.
+    expect(queries[0].params.slice(-3, -1)).toEqual(['862', '862'])
   })
 
   it('emite TASK_BLOCKED no outbox na mesma transação do bloqueio', async () => {

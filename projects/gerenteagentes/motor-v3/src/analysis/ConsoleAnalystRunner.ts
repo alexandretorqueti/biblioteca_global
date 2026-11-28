@@ -237,7 +237,17 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
     const fail = (reason: string): never => {
       throw new Error(`project_setup_preflight_failed: projeto sem setup concluído (${reason})`)
     }
-    if (!workspace) fail('repo_inacessivel: repoPath/workspace vazio')
+    if (!workspace) {
+      // Incidente 27/11 (projeto 16 / tarefa 1138 / bloqueio 3568): linha em
+      // projeto_motor_config inexistente deixa repoPath vazio — isso NÃO é
+      // repo inacessível, é config do motor faltando. Mensagem canônica sem
+      // 'repo_inacessivel' para o TaskCoordinator classificar como
+      // 'setup_faltando' (sem tocar setup_status) e notificar o Monitor.
+      if (task.motorConfigPresent === false) {
+        throw new Error(`project_setup_preflight_failed: projeto_motor_config ausente para projeto_id=${task.projetoId ?? 'desconhecido'} (registrar config do motor)`)
+      }
+      fail('repo_inacessivel: repoPath/workspace vazio')
+    }
     const mappedWorkspace = this.config.workspacePathMapper?.(workspace)
     const candidates = [...new Set([workspace, mappedWorkspace].filter((path): path is string => Boolean(path)))]
     let lastError: unknown
