@@ -41,7 +41,7 @@ export class ConsoleHttpApi implements AnalystConsole {
   }
 
   async getSessionStatus(session: AnalystSession): Promise<import('./ConsoleAnalystRunner.js').ConsoleSessionStatus> {
-    const status = await this.request<{ status?: string; state?: string; hasActiveRun?: boolean; endedAt?: unknown; errorMessage?: string; message?: string; errorCode?: string; error?: unknown; failure?: unknown; details?: unknown }>('/api/sessions/describe', {
+    const status = await this.request<{ status?: string; state?: string; hasActiveRun?: boolean; endedAt?: unknown; abortedLastRun?: unknown; errorMessage?: string; message?: string; errorCode?: string; error?: unknown; failure?: unknown; details?: unknown }>('/api/sessions/describe', {
       method: 'GET', query: { key: session.sessionKey, agentId: session.agentId },
     })
     const terminalFailure = new Set(['failed', 'error', 'cancelled', 'canceled'])
@@ -108,7 +108,7 @@ export class ConsoleHttpApi implements AnalystConsole {
       // O Console por vezes expõe apenas status=failed. O histórico pode trazer
       // o detalhe do provedor ou apenas uma falha genérica com stopReason=error.
       const detail = this.failureText(status.error) ?? this.failureText(status.failure) ?? this.failureText(status.details)
-      const error = this.stringValue(assistant?.errorMessage)
+      const specificError = this.stringValue(assistant?.errorMessage)
         ?? this.stringValue(assistant?.errorCode)
         ?? this.stringValue(assistant?.errorType)
         ?? this.stringValue(status.errorCode)
@@ -118,6 +118,21 @@ export class ConsoleHttpApi implements AnalystConsole {
         ?? (assistant?.stopReason === 'error'
           ? `SESSION_FAILED: ${this.stringValue(assistant.content) ?? 'falha antes de produzir resposta'}`
           : undefined)
+      // Parada recuperável por interrupção do run (incidente s1635/tarefa 1138,
+      // 2026-11-28): restart forçado do Gateway aborta o run ativo no meio do
+      // trabalho — o describe expõe `abortedLastRun` — e turno que estoura o
+      // budget de saída (stopReason=length com reasoning consumindo todos os
+      // tokens) não deixa erro específico em lugar nenhum: a mensagem vazia não
+      // aparece no histórico e o describe não expõe stopReason. Nos dois casos
+      // a sessão preserva histórico, worktree e contexto; o caminho correto é o
+      // protocolo de continuação na MESMA sessão (mesmo tratamento do `timeout`
+      // recuperável, incidente task-p2-1067), sem consumir tentativa da cadeia.
+      // O teto de nudges do chamador (maxNoAnswerNudges) limita o ciclo.
+      if (!specificError && this.isInterruptedWithoutAnswer(status.abortedLastRun, marker, failureFromCurrentRun, messages)) {
+        this.pendingResponses.delete(this.sessionKey(session))
+        return { isComplete: true }
+      }
+      const error = specificError
         ?? `Sessão do Console terminou com status ${String(status.status ?? status.state ?? 'failed')}`
       this.pendingResponses.delete(this.sessionKey(session))
       return { isComplete: false, isFailed: true, error: error.slice(0, 800) }
@@ -161,6 +176,31 @@ export class ConsoleHttpApi implements AnalystConsole {
       if (full !== undefined) lastResponse = full
     }
     return lastResponse
+  }
+
+  /**
+   * Falha terminal SEM erro específico em que há evidência de interrupção do
+   * run (não de falha do modelo):
+   * - `abortedLastRun === true`: o ÚLTIMO run foi abortado (restart do Gateway
+   *   ou abort manual). Sinal direto do describe; vale mesmo sem marcador
+   *   (sessão anexada por reconciliador pós-restart).
+   * - Houve atividade do agente depois do envio, mas nenhuma resposta final:
+   *   o turno foi cortado no meio (ex.: budget de saída estourado pelo
+   *   reasoning — `stopReason=length` com conteúdo vazio, invisível no
+   *   histórico público). Exige procedência do run atual (`endedAt >= sentAt`)
+   *   para não mascarar falha obsoleta.
+   * A recuperação (continuação na mesma sessão) é limitada pelo teto de nudges
+   * do chamador, então mesmo uma classificação equivocada tem custo limitado.
+   */
+  private isInterruptedWithoutAnswer(
+    abortedLastRun: unknown,
+    marker: { messageIds: Set<string>; sentAt: number } | undefined,
+    failureFromCurrentRun: boolean,
+    messages: ConsoleHistoryMessage[],
+  ): boolean {
+    if (abortedLastRun === true) return marker === undefined || failureFromCurrentRun
+    if (!marker || !failureFromCurrentRun) return false
+    return messages.some(message => message.role !== 'user' && this.isResponseAfter(message, marker))
   }
 
   /** Mensagens de erro do provedor não são respostas utilizáveis para recuperação. */

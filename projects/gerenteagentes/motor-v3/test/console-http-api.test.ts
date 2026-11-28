@@ -454,5 +454,104 @@ describe('ConsoleHttpApi', () => {
 
     await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false, isFailed: true, error: '500 provider_error' })
   })
+
+  // Incidente s1635/tarefa 1138 (2026-11-28): restart forçado do Gateway
+  // abortou o run DEV no meio do trabalho (`OPENCLAW_RESTART_ABORT`); o motor
+  // recebeu só a falha genérica, queimou a 3ª tentativa e bloqueou a tarefa
+  // (worker_exhausted) em vez de pedir continuação na mesma sessão.
+  it('trata run abortado por restart do Gateway como parada recuperável (abortedLastRun)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    const session = { sessionId: 's-restart-abort', sessionKey: 'agent:a:restart-abort', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      // describe: run atual falhou DEPOIS do envio e o último run foi abortado
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 105_000, abortedLastRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'new-prompt', role: 'user', content: 'Execute a subtarefa', createdAt: 100_000 },
+        { id: 'new-tool', role: 'tool', content: 'Successfully wrote 3385 bytes', createdAt: 104_000 },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Execute a subtarefa' })
+    vi.setSystemTime(106_000)
+
+    // Sem resposta final → o chamador pede continuação na MESMA sessão sem
+    // consumir tentativa (protocolo do timeout recuperável, task-p2-1067).
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true })
+  })
+
+  it('trata abort sinalizado sem marcador como recuperável (sessão anexada por reconciliador)', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 1, abortedLastRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'tool', role: 'tool', content: 'Saída de ferramenta', createdAt: 1 },
+      ] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's-reattach', sessionKey: 'agent:a:reattach', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: true })
+  })
+
+  it('trata falha genérica do run atual com atividade e sem resposta final como parada recuperável (budget de saída estourado)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    const session = { sessionId: 's-length-empty', sessionKey: 'agent:a:length-empty', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      // Turno estourou o budget de saída (stopReason=length, reasoning comeu
+      // todos os tokens): sem abortedLastRun, sem erro específico em lugar
+      // nenhum; só atividade do agente antes do corte.
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 105_000 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'new-prompt', role: 'user', content: 'Execute a subtarefa', createdAt: 100_000 },
+        { id: 'new-tool', role: 'tool', content: 'Successfully replaced 2 block(s)', createdAt: 104_000 },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Execute a subtarefa' })
+    vi.setSystemTime(106_000)
+
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true })
+  })
+
+  it('não declara recuperação de abort enquanto há run ativo na lane', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: true, endedAt: 1, abortedLastRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's-abort-active', sessionKey: 'agent:a:abort-active', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false, activity: { repeatedToolCalls: 0 }, laneBusy: true })
+  })
+
+  it('não trata falha obsoleta com abortedLastRun antigo como recuperação do run atual', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    vi.stubEnv('MOTOR_CONSOLE_STALE_FAILED_GRACE_MS', '0')
+    const session = { sessionId: 's-abort-stale', sessionKey: 'agent:a:abort-stale', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      // endedAt ANTERIOR ao envio: a falha (mesmo com abortedLastRun) é do run
+      // antigo; sem atividade nova e fora da tolerância, precisa ser consumida.
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 99_000, abortedLastRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'new-prompt', role: 'user', content: 'Continue', createdAt: 100_000 },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Continue' })
+    vi.setSystemTime(100_500)
+
+    const status = await api.getSessionStatus(session)
+    expect(status.isFailed).toBe(true)
+    expect(status.isComplete).toBe(false)
+  })
 })
 // @vitest-environment node
