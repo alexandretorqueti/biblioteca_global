@@ -33,9 +33,15 @@ import { GestaoTarefasGlobalAnexosModule } from "./modules/gestao-tarefas-global
 import { GestaoTarefasGlobalRecorrenciaModule } from "./modules/gestao-tarefas-global-recorrencia/gestao-tarefas-global-recorrencia.module"
 import { GestaoTarefasGlobalNotificacoesModule } from "./modules/gestao-tarefas-global-notificacoes/gestao-tarefas-global-notificacoes.module"
 import { GestaoTarefasGlobalVisoesModule } from "./modules/gestao-tarefas-global-visoes/gestao-tarefas-global-visoes.module"
+import { VitrinePublicaModule } from "./modules/vitrine-publica/vitrine-publica.module"
 
 @Module({
   imports: [
+    // Vitrine pública (macro #10): GET /api/vitrine/conteudo sem auth. PRIMEIRO
+    // no array: a ordem de descoberta de módulos define a ordem das rotas no
+    // Express, e `/api/:slug/:resource` (CrudModule) sombreia qualquer rota
+    // registrada depois dele (verificado empiricamente — dump do stack).
+    VitrinePublicaModule,
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: [".env", resolve(__dirname, "..", "..", "..", ".env")],
