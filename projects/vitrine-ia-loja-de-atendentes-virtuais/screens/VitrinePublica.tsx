@@ -18,6 +18,7 @@
  * veicula copy comercial, planos ou dados.
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { Link } from "react-router-dom"
 import {
   Accordion,
   AccordionDetails,
@@ -216,7 +217,7 @@ export default function VitrinePublica(): ReactNode {
     (valor): valor is string => valor !== null && valor.length > 0,
   )
   const heroCta = texto("hero_cta")
-  const ctaBotao = texto("cta_botao") ?? "Fale no WhatsApp"
+  const ctaBotao = texto("cta_botao") ?? "Comprar agora"
   const ctaCorpo = [texto("cta_texto"), texto("contato_texto")].filter(
     (valor): valor is string => valor !== null && valor.length > 0,
   )
@@ -238,6 +239,25 @@ export default function VitrinePublica(): ReactNode {
         {rotulo}
       </Button>
     ) : null
+
+  /**
+   * Botão de compra (subtarefa 3): plano/CTA linkam ao formulário público de
+   * pedido (`/vitrine-ia/pedido`), com o plano pré-selecionado por NOME via
+   * query — sempre o nome publicado no conteúdo, nunca copy/telefone
+   * hardcoded. O rótulo segue dirigido pelo conteúdo (`textoBotao`).
+   */
+  const botaoComprar = (rotulo: string, key?: string, planoNome?: string): ReactNode => (
+    <Button
+      key={key}
+      component={Link}
+      to={planoNome ? `/vitrine-ia/pedido?plano=${encodeURIComponent(planoNome)}` : "/vitrine-ia/pedido"}
+      variant="contained"
+      size="large"
+      sx={{ borderRadius: 999, px: 3, py: 1, fontWeight: 700 }}
+    >
+      {rotulo}
+    </Button>
+  )
 
   if (estado === "carregando") {
     return (
@@ -530,9 +550,10 @@ export default function VitrinePublica(): ReactNode {
                     </Box>
                   )}
                   <Box sx={{ mt: "auto" }}>
-                    {botaoWhatsapp(
-                      plano.textoBotao ?? "Fale no WhatsApp",
+                    {botaoComprar(
+                      plano.textoBotao ?? "Comprar neste plano",
                       `plano-${plano.nome}-${indice}`,
+                      plano.nome,
                     )}
                   </Box>
                 </Card>
@@ -588,7 +609,7 @@ export default function VitrinePublica(): ReactNode {
                   {ctaCorpo.join(" ")}
                 </Typography>
               )}
-              {botaoWhatsapp(ctaBotao, "cta-final")}
+              {botaoComprar(ctaBotao, "cta-final")}
             </Stack>
           </Container>
         </Box>

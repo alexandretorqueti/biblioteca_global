@@ -12,6 +12,8 @@ import ProjectSelectScreen from "../screens/ProjectSelectScreen"
 import SystemScreen from "../screens/SystemScreen"
 import PoliticaPrivacidadeScreen from "../screens/PoliticaPrivacidadeScreen"
 import VitrinePublicaScreen from "../../../../projects/vitrine-ia-loja-de-atendentes-virtuais/screens/VitrinePublica"
+import PedidoCompraScreen from "../../../../projects/vitrine-ia-loja-de-atendentes-virtuais/screens/PedidoCompra"
+import PedidoAcompanhamentoScreen from "../../../../projects/vitrine-ia-loja-de-atendentes-virtuais/screens/PedidoAcompanhamento"
 import { RequireAuth, RequireProject } from "./RequireAuth"
 import PainelTenantScreen from "../screens/PainelTenantScreen"
 
@@ -37,6 +39,11 @@ export function AppRoutes(): ReactNode {
       <Route path="/politica-privacidade" element={<PoliticaPrivacidadeScreen />} />
       {/* Página pública da Vitrine IA (macro #10) — conteúdo via endpoint público, sem auth */}
       <Route path="/vitrine-ia" element={<VitrinePublicaScreen />} />
+      {/* Autoatendimento (macro #10, subtarefa 3): formulário de compra e
+          acompanhamento por token — ambos públicos, transporte via
+          VitrinePublicaClient (auth "none"). */}
+      <Route path="/vitrine-ia/pedido" element={<PedidoCompraScreen />} />
+      <Route path="/vitrine-ia/pedido/:token" element={<PedidoAcompanhamentoScreen />} />
 
       {/* Raiz */}
       <Route path="/" element={<RootRedirect />} />

@@ -54,6 +54,7 @@ export {
   formatCnpj,
   isValidCnpj,
   onlyDigits,
+  formatTelefone,
 } from "./utils/masks"
 export {
   validateDynamicForm,

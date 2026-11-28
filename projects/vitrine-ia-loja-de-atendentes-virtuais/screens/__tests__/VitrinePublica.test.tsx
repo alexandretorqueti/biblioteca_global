@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { MemoryRouter } from "react-router-dom"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 import type { VitrinePublicaConteudo } from "@biblioteca-global/shared"
@@ -65,7 +66,9 @@ const CONTEUDO_COMPLETO: VitrinePublicaConteudo = {
 function renderizarTela() {
   return render(
     <BibliotecaThemeProvider>
-      <VitrinePublica />
+      <MemoryRouter initialEntries={["/vitrine-ia"]}>
+        <VitrinePublica />
+      </MemoryRouter>
     </BibliotecaThemeProvider>,
   )
 }
@@ -105,26 +108,49 @@ describe("VitrinePublica", () => {
     expect(screen.getByText("Título do CTA final")).toBeInTheDocument()
   })
 
-  it("todos os botões de WhatsApp usam o whatsapp_link do conteúdo (zero número hardcoded)", async () => {
+  it("hero usa o whatsapp_link do conteúdo; botões de plano/CTA linkam ao formulário (subtarefa 3)", async () => {
     renderizarTela()
     await screen.findByText("Título único do hero")
 
-    const links = screen.getAllByRole("link", { name: /WhatsApp|Gama|ISA/ })
-    expect(links.length).toBeGreaterThanOrEqual(3) // hero + plano + CTA final
-    for (const link of links) {
+    // Hero mantém o CTA de WhatsApp dirigido pelo conteúdo (zero número no código).
+    const links = screen.getAllByRole("link")
+    const waLinks = links.filter((link) =>
+      (link.getAttribute("href") ?? "").startsWith("https://wa.me"),
+    )
+    expect(waLinks.length).toBeGreaterThanOrEqual(1)
+    for (const link of waLinks) {
       expect(link).toHaveAttribute("href", CONTEUDO_COMPLETO.textos[9]!.conteudo)
       expect(link).toHaveAttribute("target", "_blank")
     }
+
+    // Botão do plano aponta para o formulário com o plano pré-selecionado POR NOME.
+    const botaoPlano = screen.getByRole("link", { name: "Quero o Gama" })
+    expect(botaoPlano).toHaveAttribute(
+      "href",
+      `/vitrine-ia/pedido?plano=${encodeURIComponent("Plano Gama")}`,
+    )
+    // CTA final aponta para o formulário (rótulo vem do conteúdo: cta_botao ausente → fallback).
+    const botaoCta = screen.getByRole("link", { name: "Comprar agora" })
+    expect(botaoCta).toHaveAttribute("href", "/vitrine-ia/pedido")
   })
 
-  it("sem whatsapp_link no conteúdo, nenhum botão de WhatsApp é renderizado", async () => {
+  it("sem whatsapp_link no conteúdo, nenhum link wa.me é renderizado (botões de compra permanecem)", async () => {
     estado.conteudo = {
       ...CONTEUDO_COMPLETO,
       textos: CONTEUDO_COMPLETO.textos.filter((t) => t.chave !== "whatsapp_link"),
     }
     renderizarTela()
     await screen.findByText("Título único do hero")
-    expect(screen.queryAllByRole("link")).toHaveLength(0)
+
+    const links = screen.getAllByRole("link")
+    expect(
+      links.filter((link) => (link.getAttribute("href") ?? "").startsWith("https://wa.me")),
+    ).toHaveLength(0)
+    // O caminho de autoatendimento não depende de WhatsApp existir no conteúdo.
+    expect(screen.getByRole("link", { name: "Quero o Gama" })).toHaveAttribute(
+      "href",
+      `/vitrine-ia/pedido?plano=${encodeURIComponent("Plano Gama")}`,
+    )
   })
 
   it("omite seções cujas listas vêm vazias", async () => {

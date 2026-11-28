@@ -14,7 +14,7 @@ class FakeFetch {
   responses: Array<{ status: number; body: unknown }> = []
 
   handler: FetchFn = async (url, init) => {
-    this.requests.push({ method: init.method, url, body: init.body ? JSON.parse(init.body) : undefined })
+    this.requests.push({ method: init.method, url, body: init.body instanceof FormData ? init.body : init.body ? JSON.parse(init.body) : undefined })
     const response = this.responses.shift() ?? { status: 200, body: {} }
     return { status: response.status, json: async () => response.body }
   }
