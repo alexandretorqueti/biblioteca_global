@@ -295,7 +295,10 @@ describe('TaskCoordinator', () => {
 
       await expect(coordinator.handle({ ...command(), attempt: 3 })).rejects.toThrow('Console indisponível')
 
-      expect(analysisFailure.blockForAnalysisFailure).toHaveBeenCalledWith('task-1', expect.objectContaining({ attempt: 3, error: 'Console indisponível' }))
+      // Terceiro argumento (blockReason) undefined preserva o default
+      // 'analysis_failed' — a razão dedicada 'setup_faltando' só entra quando
+      // o erro marca config do motor ausente (task-p2-1149 subtarefa 2).
+      expect(analysisFailure.blockForAnalysisFailure).toHaveBeenCalledWith('task-1', expect.objectContaining({ attempt: 3, error: 'Console indisponível' }), undefined)
       expect(eventos.map(e => e.evento)).toEqual(['analysis_started', 'analysis_failed'])
       expect(eventos[1].payload).toMatchObject({ final: true, attempt: 3 })
     })

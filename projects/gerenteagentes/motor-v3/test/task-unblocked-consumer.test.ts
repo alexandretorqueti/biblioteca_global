@@ -253,6 +253,25 @@ describe('TaskUnblockedConsumer', () => {
     expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(0)
   })
 
+  // Incidente 27/11 (projeto 16 sem linha em projeto_motor_config): o
+  // bloqueio dedicado 'setup_faltando' retoma pelo MESMO caminho canônico de
+  // 'analysis_failed' — registrar a config e resolver o bloqueio devolve a
+  // tarefa à análise.
+  it("setup_faltando: enfileira TASK_RESUME_REQUESTED no mesmo ramo de analysis_failed", async () => {
+    const env = fakeEnvironment()
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'setup_faltando' }))
+
+    const resumes = env.outbox('TASK_RESUME_REQUESTED')
+    expect(resumes).toHaveLength(1)
+    expect(resumes[0].params[3]).toBe('task-p1-886')
+    const resumed = env.events.find(e => e.evento === 'task_resumed_by_monitor')!
+    expect(resumed.payload).toMatchObject({ blockReason: 'setup_faltando', action: 'analysis_resume_enqueued' })
+    expect(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')).toHaveLength(0)
+    expect(env.outbox('SUBTASK_VERIFICATION_REQUESTED')).toHaveLength(0)
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(0)
+  })
+
   it('subtask_verification_failed: reabre subtarefa e enfileira verificação na mesma transação', async () => {
     const env = fakeEnvironment({ verificationSubtasks: [{ id: 901, seq: 3 }] })
 

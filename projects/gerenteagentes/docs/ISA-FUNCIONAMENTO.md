@@ -267,7 +267,7 @@ Conferido por busca no workspace (código vigente; checkouts legados como `wt-de
 - **`flushOutbox` existe no `api-client` mas nenhum chamador no front da Isa o invoca** — mensagens em outbox só saem se algum consumidor chamar explicitamente.
 - **Colunas do schema não escritas por este módulo:** `chats.merged_into` (fusão "1 chat por email" é regra de schema/motor, não de `isa-chat`), `chats.handoffs`/`chats.session_keys` (json de handoff), `chats.email`/`chats.name` (usados por caminhos do motor), `chat_mensagens.typing`/`chat_mensagens.seq`.
 - **Status que nenhum código deste módulo grava:** `em_andamento` (comentário do schema) e `conversando` (rótulo do front). Os status gravados são os da §15.
-- **A criação de `projetos_captados` pelo `finalizeOnboarding` não popula `repoPath`/`buildCommand`/`unitTestCommand`** (esses campos vivem em `projeto_motor_config`, alimentado fora do fluxo da Isa) nem `plataformaProjetoId`/`agenteId`/`regras`; o ambiente de execução e o vínculo com a plataforma são preenchidos por outros caminhos.
+- **`finalizeOnboarding` registra a linha em `projeto_motor_config` com defaults monorepo** (desde 2026-11-28, fim do bloqueio "repoPath vazio" — incidente 27/11, tarefa 1138): helper `ensureMotorConfigPadrao` (`api/projeto-motor-config-defaults.ts`) faz insert idempotente (ON DUPLICATE KEY UPDATE no-op em conflito da unique de `projeto_id`) com `repo_path`/`branch_trabalho`/`build_command`/`unit_test_command`/`unit_test_exclude`/`deploy_kind`/`default_max_rework`/`default_hard_timeout_ms` espelhando a linha do projeto 1; **nunca sobrescreve linha existente** (projetos standalone e ajustes posteriores seguem por cadastro manual/missão dedicada, e `dispararMissaoSetup` refaz o mesmo ensure como safety net). O que o fluxo da Isa ainda NÃO popula: `plataformaProjetoId`/`regras` de `projetos_captados` — o vínculo com a plataforma é preenchido pelo provisionamento.
 - **Nenhuma rota de `isa-chat` lê `projetos_captados`/`contatos` diretamente** — para o visitante anônimo, a leitura do projeto captado é feita pelo bloco `project` do histórico (§9). A revisão administrativa desses dados existe em outro controller autenticado (`gerenteagentes.controller.ts`, rotas `/api/gerenteagentes/contatos` e `/api/gerenteagentes/projetos-captados`, fora do escopo deste módulo).
 
 ## 14. Resumo sequencial (tabela dos eventos)
@@ -284,7 +284,7 @@ Conferido por busca no workspace (código vigente; checkouts legados como `wt-de
 | 7 | Telefone (opcional) | `POST /api/onboarding/phone` | `contatos.telefone` | Não |
 | 8 | Definições | `POST /api/definition` · `/api/definition/update` | `definicoes` (buffer do chat → após finalizar, do projeto) | Não |
 | 9 | Nome do projeto | `POST /api/project/name` | `chats.nome_projeto` (+`projetos_captados.nome` se já criado) | Não |
-| 10 | Finalizar captação | `POST /api/onboarding/finalize` | `projetos_captados` + `definicoes.projeto_id` + `chats.projeto_id`, `status=finalizado` | Não |
+| 10 | Finalizar captação | `POST /api/onboarding/finalize` | `projetos_captados` + `definicoes.projeto_id` + `chats.projeto_id`, `status=finalizado` + `projeto_motor_config` (defaults monorepo, insert idempotente — não sobrescreve linha existente) | Não |
 | — | Reabrir a página / reler | `POST /api/session` + `GET /api/chat/:id/history` | nada novo (histórico do que já existe; sync se houver `sessionKey`) | Só history (se `sessionKey`) |
 
 ## 15. Estados do chat (`chats.status`)

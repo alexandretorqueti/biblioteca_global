@@ -9,11 +9,22 @@ import type { AnalysisFailureSink } from './AnalysisFailureBlocker.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import type { ErrorInput } from '../classifier/EventClassifier.js'
 import type { ClarificationCheckpointStore, ClarificationResumeInput } from './ClarificationCheckpoints.js'
+import type { SetupGateSubReason } from '../setup/SetupGateRecovery.js'
 import type { ResumeRejectionNotifier } from './ResumeTerminalGuard.js'
 import { deriveResumeRejection } from './ResumeTerminalGuard.js'
 
 export type TaskLifecycleStatus = DerivedTaskStatus
 export type AnalysisClaimResult = boolean | 'capacity_waiting'
+
+/**
+ * Razão de bloqueio dedicada quando a linha do projeto em
+ * `projeto_motor_config` não existe (incidente 27/11, projeto 16): é falta de
+ * setup do motor, não falha genérica de análise. Categoria canônica de
+ * SETUP_GATE_SUB_REASONS (src/setup/SetupGateRecovery.ts) — o desbloqueio
+ * retoma a análise pelo mesmo caminho de `analysis_failed`
+ * (TaskUnblockedConsumer).
+ */
+const MOTOR_CONFIG_MISSING_BLOCK_REASON = 'setup_faltando' satisfies SetupGateSubReason
 
 export interface CapacityWaitProjection {
   phase: 'analysis' | 'development'
@@ -120,6 +131,18 @@ export interface TaskSnapshot {
   /** Todas as dependências N:N; o trio acima é mantido para o legado. */
   dependencies?: TaskDependencySnapshot[]
   capacityWait?: CapacityWaitProjection | null
+  /**
+   * ID numérico do projeto no banco (null = tarefa sem projeto). Opcional:
+   * snapshots legados/fixtures antigos continuam válidos sem o campo.
+   */
+  projetoId?: number | null
+  /**
+   * `false` somente quando a linha do projeto em `projeto_motor_config` NÃO
+   * existe (projetado por `pmc.id IS NOT NULL`). `undefined` = desconhecido
+   * (fixtures legados) — o preflight preserva o comportamento antigo nesse
+   * caso. Config ausente não é repo inacessível: é setup do motor faltando.
+   */
+  motorConfigPresent?: boolean
 }
 
 /**
@@ -454,7 +477,7 @@ export class TaskCoordinator {
         // Um repo ausente/inacessível é um bloqueio operacional do projeto,
         // não prova de que o setup falhou. Preservar essa razão explícita
         // evita converter repo_inacessivel em setup_failed.
-        if (recordSetupFailure && !errorMessage.includes('repo_inacessivel')) {
+        if (recordSetupFailure && !errorMessage.includes('repo_inacessivel') && !errorMessage.includes('projeto_motor_config ausente')) {
           await recordSetupFailure.call(this.analysisFailure, task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage }).catch(recordError => {
             console.warn(`[TaskCoordinator] falha ao persistir erro de setup do projeto ${task.taskId}:`, this.errorMessage(recordError))
           })
@@ -471,8 +494,10 @@ export class TaskCoordinator {
         : false
       if (finalAttempt && !governedTerminal && this.analysisFailure) {
         try {
-          await this.analysisFailure.blockForAnalysisFailure(task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage })
-          await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'block_task_for_analysis_failure', result: { executionId, analysisAttempt } })
+          // Config do motor ausente é um bloqueio de setup, não falha de análise.
+          const blockReason = errorMessage.includes('projeto_motor_config ausente') ? MOTOR_CONFIG_MISSING_BLOCK_REASON : undefined
+          await this.analysisFailure.blockForAnalysisFailure(task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage }, blockReason)
+          await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'block_task_for_analysis_failure', result: { executionId, analysisAttempt, blockReason } })
         } catch (blockError) {
           const blockErrorMessage = blockError instanceof Error ? blockError.message : String(blockError)
           console.error(`[TaskCoordinator] falha ao persistir bloqueio de análise da tarefa ${task.taskId}: ${blockErrorMessage}`)

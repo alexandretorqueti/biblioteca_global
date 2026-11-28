@@ -10,7 +10,12 @@ export interface AnalysisFailureInfo {
 
 /** Porta de persistência do bloqueio de falha definitiva de análise. */
 export interface AnalysisFailureSink {
-  blockForAnalysisFailure(taskId: string, info: AnalysisFailureInfo): Promise<void>
+  /**
+   * `blockReason` opcional permite bloquear com razão dedicada
+   * (ex.: 'setup_faltando' quando falta a linha em `projeto_motor_config`)
+   * mantendo o default histórico 'analysis_failed'.
+   */
+  blockForAnalysisFailure(taskId: string, info: AnalysisFailureInfo, blockReason?: string): Promise<void>
   recordProjectSetupFailure?(taskId: string, info: AnalysisFailureInfo): Promise<void>
 }
 
@@ -40,8 +45,9 @@ export interface AnalysisRecoveryFailureSink {
  *
  * Sem este registro a tarefa voltava silenciosamente para `planned` (ou
  * congelava órfã em `analyzing`) e o usuário nunca era surface-ado do erro.
- * Idempotente: não duplica bloqueio `analysis_failed` não resolvido da mesma
- * tarefa (redeliveries/DLQ não geram novas linhas).
+ * Idempotente: não duplica bloqueio não resolvido da MESMA razão (parâmetro
+ * `blockReason`, default `analysis_failed`) da mesma tarefa (redeliveries/DLQ
+ * não geram novas linhas).
  *
  * Monitor-Resolvedor: quando o bloqueio é criado, emite `TASK_BLOCKED` na
  * MESMA transação (via outbox) para acionar o Monitor automaticamente.
@@ -60,7 +66,12 @@ export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
     )
   }
 
-  async blockForAnalysisFailure(taskId: string, info: AnalysisFailureInfo): Promise<void> {
+  async blockForAnalysisFailure(taskId: string, info: AnalysisFailureInfo, blockReason?: string): Promise<void> {
+    // Razão canônica dedicada (ex.: 'setup_faltando' — config do motor
+    // ausente, SETUP_GATE_SUB_REASONS em src/setup/SetupGateRecovery.ts);
+    // sem o parâmetro, o comportamento histórico 'analysis_failed' é
+    // preservado byte-a-byte.
+    const reason = blockReason ?? 'analysis_failed'
     const numeric = /^\d+$/.test(taskId)
     const where = numeric ? '(t.external_id = ? OR CAST(t.id AS CHAR) = ?)' : 't.external_id = ?'
     const excerpt = JSON.stringify({
@@ -68,10 +79,12 @@ export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
       attempt: info.attempt,
       error: info.error.slice(0, 1800),
     })
+    // Ordem dos placeholders do INSERT...SELECT: valores (reason, command,
+    // excerpt) → WHERE ${where} → ? da subconsulta NOT EXISTS (reason).
     const params: unknown[] = numeric
-      ? [`analysis_failed`, 'TASK_RESUME_REQUESTED', excerpt, taskId, taskId]
-      : [`analysis_failed`, 'TASK_RESUME_REQUESTED', excerpt, taskId]
-    const taskParams: unknown[] = numeric ? [taskId, taskId] : [taskId]
+      ? [reason, 'TASK_RESUME_REQUESTED', excerpt, taskId, taskId, reason]
+      : [reason, 'TASK_RESUME_REQUESTED', excerpt, taskId, reason]
+    const taskParams: unknown[] = numeric ? [taskId, taskId, reason] : [taskId, reason]
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -81,13 +94,13 @@ export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
          WHERE ${where}
            AND NOT EXISTS (
              SELECT 1 FROM bloqueios b
-             WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL AND b.block_reason = 'analysis_failed'
+             WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL AND b.block_reason = ?
            )
          LIMIT 1`,
         params,
       )
       if (result.affectedRows === 0) {
-        // Tarefa inexistente ou bloqueio analysis_failed já ativo — ambos são
+        // Tarefa inexistente ou bloqueio da mesma razão já ativo — ambos são
         // desfechos aceitáveis para uma chamada idempotente. Sem evento novo.
         await connection.commit()
         return
@@ -95,7 +108,7 @@ export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
       const [rows] = await connection.query<Array<RowDataPacket & { id: number; tarefa_id: number }>>(
         `SELECT b.id, b.tarefa_id FROM bloqueios b
          INNER JOIN tarefas t ON t.id = b.tarefa_id
-         WHERE ${where} AND b.resolved_at IS NULL AND b.block_reason = 'analysis_failed'
+         WHERE ${where} AND b.resolved_at IS NULL AND b.block_reason = ?
          ORDER BY b.id DESC LIMIT 1`,
         taskParams,
       )
@@ -103,7 +116,7 @@ export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
         taskId,
         executionId: `${info.executionId}-block`,
         payload: {
-          blockReason: 'analysis_failed',
+          blockReason: reason,
           blockCommand: 'TASK_RESUME_REQUESTED',
           blockExcerpt: excerpt.slice(0, 500),
           blockId: rows[0]?.id != null ? Number(rows[0].id) : null,

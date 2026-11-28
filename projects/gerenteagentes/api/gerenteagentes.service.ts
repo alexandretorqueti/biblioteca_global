@@ -58,6 +58,7 @@ import type { PromptPart } from '../src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 import { GitInspectorService } from './git-inspector.service';
+import { ensureMotorConfigPadrao } from './projeto-motor-config-defaults';
 import { RealtimeMutationBoundaryService, REALTIME_TENANT_PROJECT_ID } from './realtime-mutation-boundary.service';
 import {
   validarPlanoMacro,
@@ -3791,6 +3792,21 @@ export class GerenteAgentesService {
       updatedAt: new Date(),
     }).where(eq(projetosCaptados.id, projetoCaptado.id));
 
+    // Safety net (2026-11-28, fim do bloqueio "repoPath vazio" — incidente 27/11,
+    // tarefa 1138): garante a linha em projeto_motor_config ANTES de lê-la. Cobre
+    // projetos criados antes do registro automático na Isa e re-setups.
+    // Idempotente: nunca sobrescreve linha existente; falha aqui não impede a
+    // montagem (o texto do preflight do Analista orienta o cadastro manual).
+    try {
+      await ensureMotorConfigPadrao(db, projetoCaptado.id);
+    } catch (error) {
+      this.logger.warn(
+        `Falha no ensure de projeto_motor_config para o projeto ${projetoCaptado.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     const [motorConfig] = await db
       .select({
         projectLayout: projetoMotorConfig.projectLayout,
@@ -4217,7 +4233,7 @@ export class GerenteAgentesService {
       '',
       ...(modoVerificacao
         ? [
-            '⚠️ MODO VERIFICAÇÃO: em cada item 2.1–2.7, primeiro confira se o registro JÁ',
+            '⚠️ MODO VERIFICAÇÃO: em cada item 2.1–2.8, primeiro confira se o registro JÁ',
             `   EXISTE (grep por "${slug}" no arquivo-alvo); registre somente o que faltar —`,
             '   nunca duplique entradas.',
             '',
@@ -4262,6 +4278,16 @@ export class GerenteAgentesService {
       '2.7. PROJECT-DB.FACTORY (se o projeto tem banco próprio):',
       '     Arquivo: apps/api/src/modules/crud/project-db.factory.ts',
       '     - Verificar se o projeto está mapeado (geralmente automático via core.projetos)',
+      '',
+      '2.8. REGISTRO DO MOTOR (banco projeto_640.projeto_motor_config):',
+      '     - Confirmar EXISTS linha com o projeto_id deste projeto',
+      '       (SELECT id FROM projeto_motor_config WHERE projeto_id = <id>);',
+      '     - Se ausente, inserir defaults monorepo espelhando o projeto 1',
+      '       (biblioteca-global): repo_path, branch_trabalho, build_command,',
+      '       unit_test_command, unit_test_exclude, deploy_kind,',
+      '       default_max_rework, default_hard_timeout_ms;',
+      '     - NUNCA sobrescrever linha existente (o registro automático da Isa já cria',
+      '       a maioria; atualizações posteriores são explícitas, por missão/humano).',
       '',
       ...passosAgente,
       '',
