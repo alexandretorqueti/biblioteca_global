@@ -11,6 +11,7 @@ import LoginScreen from "../screens/LoginScreen"
 import ProjectSelectScreen from "../screens/ProjectSelectScreen"
 import SystemScreen from "../screens/SystemScreen"
 import PoliticaPrivacidadeScreen from "../screens/PoliticaPrivacidadeScreen"
+import VitrinePublicaScreen from "../../../../projects/vitrine-ia-loja-de-atendentes-virtuais/screens/VitrinePublica"
 import { RequireAuth, RequireProject } from "./RequireAuth"
 import PainelTenantScreen from "../screens/PainelTenantScreen"
 
@@ -34,6 +35,8 @@ export function AppRoutes(): ReactNode {
         }
       />
       <Route path="/politica-privacidade" element={<PoliticaPrivacidadeScreen />} />
+      {/* Página pública da Vitrine IA (macro #10) — conteúdo via endpoint público, sem auth */}
+      <Route path="/vitrine-ia" element={<VitrinePublicaScreen />} />
 
       {/* Raiz */}
       <Route path="/" element={<RootRedirect />} />
