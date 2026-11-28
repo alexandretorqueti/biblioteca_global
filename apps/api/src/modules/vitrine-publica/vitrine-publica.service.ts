@@ -185,8 +185,12 @@ export class VitrinePublicaService {
     return vitrinePublicaConteudoSchema.parse(conteudo)
   }
 
-  /** Database físico do projeto da vitrine — id resolvido no core, nunca no payload. */
-  private async obterDbProjeto(): Promise<ProjetoDb> {
+  /**
+   * Database físico do projeto da vitrine — id resolvido no core, nunca no
+   * payload. Público para reuso pelo `VitrinePedidosService` (mesma
+   * resolução server-side do endpoint de conteúdo).
+   */
+  async obterDbProjeto(): Promise<ProjetoDb> {
     const projetoId = await this.resolverProjetoId()
     return this.factory.obter({ id: projetoId })
   }

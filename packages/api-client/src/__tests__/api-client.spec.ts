@@ -35,7 +35,7 @@ class FakeFetch {
       url,
       method: init.method,
       headers: init.headers,
-      body: init.body !== undefined ? JSON.parse(init.body) : undefined,
+      body: init.body instanceof FormData ? init.body : init.body !== undefined ? JSON.parse(init.body) : undefined,
     }
     this.requests.push(registro)
     const resposta = this.respostas.shift() ?? { status: 200, body: {} }

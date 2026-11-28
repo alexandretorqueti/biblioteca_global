@@ -13,6 +13,12 @@ import type {
 export type AuthMode = "access" | "refresh" | "none"
 
 export interface RequestOptions {
+  /**
+   * Body da requisição: objeto é serializado como JSON com
+   * `Content-Type: application/json`; `FormData` é enviado cru como
+   * multipart — o browser define o header com o boundary, portanto NENHUM
+   * `Content-Type` manual é aplicado (upload público da vitrine, macro #10).
+   */
   body?: unknown
   signal?: AbortSignal
   query?: Record<string, string | number | boolean | undefined>
@@ -82,13 +88,16 @@ export class ApiHttpClient {
   ): Promise<T> {
     const headers: Record<string, string> = {}
     const auth: AuthMode = opts.auth ?? "access"
+    const corpoEhFormData = opts.body instanceof FormData
     // Regra de ouro: com token de acesso (operações no escopo do projeto),
     // projetoId jamais sai do cliente. Única exceção legítima: o fluxo de
     // seleção de projeto (PoC §5.1), que usa o refresh token.
-    if (opts.body !== undefined && auth === "access") {
+    // FormData não é um payload inspecionável por chave — a barreira de
+    // contrato do endpoint (strict) é quem garante a ausência de campos.
+    if (opts.body !== undefined && auth === "access" && !corpoEhFormData) {
       assertSemProjetoId(opts.body)
     }
-    if (opts.body !== undefined) {
+    if (opts.body !== undefined && !corpoEhFormData) {
       headers["Content-Type"] = "application/json"
     }
     if (opts.headers) {
@@ -108,7 +117,12 @@ export class ApiHttpClient {
     const resposta = await this.fetchImpl(url, {
       method,
       headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      body:
+        opts.body === undefined
+          ? undefined
+          : corpoEhFormData
+            ? (opts.body as FormData)
+            : JSON.stringify(opts.body),
       signal: opts.signal,
     })
 

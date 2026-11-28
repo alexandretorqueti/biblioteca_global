@@ -59,3 +59,4 @@ export {
 export type { CreateGlobalUserInput, GlobalUser, GlobalUserDetail, GlobalUserLink, GlobalUserLinkChanges, UpdateGlobalUserInput } from "./global-users-client"
 export { WhatsappChannelsClient, createWhatsappChannelsClient } from "./whatsapp-client"
 export { VitrinePublicaClient, createVitrinePublicaClient } from "./vitrine-publica-client"
+export type { VitrinePedidoCriacaoInput } from "./vitrine-publica-client"

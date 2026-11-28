@@ -89,6 +89,9 @@ services:
       VENDAS_DOCUMENTOS_MAX_BYTES: ${VENDAS_DOCUMENTOS_MAX_BYTES:-10485760}
       ANEXOS_DIR: ${ANEXOS_DIR:-/data/gestao-tarefas-anexos}
       ANEXOS_MAX_BYTES: ${ANEXOS_MAX_BYTES:-10485760}
+      # Documentos do formulário público da vitrine (vitrine-ia — macro #10).
+      VITRINE_DOCUMENTOS_DIR: ${VITRINE_DOCUMENTOS_DIR:-/data/vitrine-documentos}
+      VITRINE_UPLOAD_MAX_BYTES: ${VITRINE_UPLOAD_MAX_BYTES:-10485760}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DLQ_CHAT_ID: ${TELEGRAM_DLQ_CHAT_ID:-}
       OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL}
@@ -111,6 +114,8 @@ services:
       - ${VENDAS_DOCUMENTOS_HOST_DIR:-./data/vendas-documentos}:/data/vendas-documentos:rw
       # Anexos de tarefas (gestao-de-tarefas-global): chave lógica por org/tarefa.
       - ${ANEXOS_HOST_DIR:-./data/gestao-tarefas-anexos}:/data/gestao-tarefas-anexos:rw
+      # Documentos da vitrine pública (vitrine-ia): chave lógica por pedido.
+      - ${VITRINE_DOCUMENTOS_HOST_DIR:-./data/vitrine-documentos}:/data/vitrine-documentos:rw
       # O motor executa o pipeline no workspace do repositório.
       # REPO_PATH é um caminho do host e deve ser configurado no .env local.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}

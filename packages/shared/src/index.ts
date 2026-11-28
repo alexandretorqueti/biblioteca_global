@@ -317,6 +317,29 @@ export type {
   VitrinePublicaConteudo,
 } from "./vitrine-publica"
 
+// Vitrine pública — contratos de pedido (macro #10, posição 3/11 — subtarefa 1)
+export {
+  vitrinePedidoCicloSchema,
+  vitrinePedidoStatusSchema,
+  vitrineDocumentoTipoConteudoSchema,
+  vitrinePedidoDadosSchema,
+  vitrinePedidoTextoLivreSchema,
+  VITRINE_TEXTO_LIVRE_MAX_CHARS,
+  VITRINE_TOKEN_ACOMPANHAMENTO_REGEX,
+  vitrinePedidoCriacaoRespostaSchema,
+  vitrinePedidoDocumentoSchema,
+  vitrinePedidoAcompanhamentoSchema,
+} from "./vitrine-pedidos"
+export type {
+  VitrinePedidoCiclo,
+  VitrinePedidoStatus,
+  VitrineDocumentoTipoConteudo,
+  VitrinePedidoDados,
+  VitrinePedidoCriacaoResposta,
+  VitrinePedidoDocumento,
+  VitrinePedidoAcompanhamento,
+} from "./vitrine-pedidos"
+
 // Configuração validada do transbordo para atendimento humano.
 export {
   transbordoDestinoTipoSchema,

@@ -24,7 +24,12 @@ export type FetchFn = (
   init: {
     method: string
     headers: Record<string, string>
-    body?: string
+    /**
+     * `string` = JSON serializado pelo ApiHttpClient; `FormData` = multipart
+     * (upload público da vitrine) — o browser define `Content-Type` com o
+     * boundary; o cliente NUNCA define esse header manualmente.
+     */
+    body?: string | FormData
     signal?: AbortSignal
   },
 ) => Promise<{ status: number; json(): Promise<unknown>; text?(): Promise<string> }>

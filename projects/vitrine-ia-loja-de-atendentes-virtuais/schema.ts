@@ -142,6 +142,9 @@ export const textosVitrine = mysqlTable(
  * Campos de fluxo (status, pagamentoId, linkAgente, scriptEmbed) são
  * somente leitura no CRUD: transições apenas pelo backend (pagamento →
  * provisionamento). Consentimento LGPD é obrigatório no envio do formulário.
+ * `token_acompanhamento` é gerado pelo backend (32 bytes aleatórios em hex,
+ * unique) — único meio do cliente acompanhar o pedido público; nunca
+ * editável/visível em formulários e jamais exposto em respostas.
  */
 export const pedidos = mysqlTable(
   "pedidos",
@@ -173,12 +176,17 @@ export const pedidos = mysqlTable(
     linkAgente: varchar("link_agente", { length: 300 }),
     scriptEmbed: text("script_embed"),
     consentimentoLgpd: boolean("consentimento_lgpd").notNull(),
+    /** Token público de acompanhamento (hex 64 chars, aleatório ≥32 bytes). */
+    tokenAcompanhamento: varchar("token_acompanhamento", { length: 64 }),
     criadoEm: timestamp("criado_em").notNull().defaultNow(),
     emAtualizacao: timestamp("em_atualizacao")
       .notNull()
       .defaultNow()
       .onUpdateNow(),
   },
+  (tabela) => [
+    unique("pedidos_token_acompanhamento_unico").on(tabela.tokenAcompanhamento),
+  ],
 )
 
 /**
@@ -451,6 +459,12 @@ export const annotations: FormAnnotationsPorTabela = {
       label: "Consentimento LGPD",
       required: true,
       helperText: "Cliente aceitou o tratamento de dados no envio do pedido",
+    },
+    token_acompanhamento: {
+      label: "Token de acompanhamento",
+      disabled: true,
+      helperText:
+        "Gerado pelo backend no pedido público; usado pelo cliente para acompanhar o pedido",
     },
     criado_em: { label: "Criado em", disabled: true },
     em_atualizacao: { label: "Atualizado em", disabled: true },
