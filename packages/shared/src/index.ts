@@ -297,6 +297,26 @@ export {
   helpDeskHistorySchema,
 } from "./helpdesk"
 
+// Vitrine pública — contrato de `GET /api/vitrine/conteudo` (macro #10, posição 2/11)
+export {
+  vitrinePublicaSecaoSchema,
+  vitrinePublicaTextoSchema,
+  vitrinePublicaPlanoSchema,
+  vitrinePublicaFaqSchema,
+  vitrinePublicaMetricaSchema,
+  vitrinePublicaSegmentoSchema,
+  vitrinePublicaConteudoSchema,
+} from "./vitrine-publica"
+export type {
+  VitrinePublicaSecao,
+  VitrinePublicaTexto,
+  VitrinePublicaPlano,
+  VitrinePublicaFaq,
+  VitrinePublicaMetrica,
+  VitrinePublicaSegmento,
+  VitrinePublicaConteudo,
+} from "./vitrine-publica"
+
 // Configuração validada do transbordo para atendimento humano.
 export {
   transbordoDestinoTipoSchema,
