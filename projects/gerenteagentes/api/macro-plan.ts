@@ -255,6 +255,28 @@ export function ordenarTarefasMacro(tarefas: MacroTarefaPlano[]): MacroTarefaPla
   return [...tarefas].sort((a, b) => a.seq - b.seq);
 }
 
+/**
+ * Normaliza a CABECA da cadeia macro para auto_start=true (incidente 27/11/2026,
+ * cadeia vitrine-ia 1137-1147): plano aprovado deve iniciar sem intervenção
+ * manual. A cabeça (primeira tarefa em ordem topológica) não tem dependência —
+ * por construção do contrato §5, depende_de só aponta para seq anteriores —,
+ * então com auto_start=false nenhum gatilho a despacharia (dispatch exige
+ * auto_start=1; retomada da tarefa 1121 exige dependência concluída) e a
+ * cadeia inteira nasceria órfã.
+ *
+ * Só a cabeça é normalizada: tarefas 2..N mantêm 1:1 o auto_start do plano, pois
+ * a ordem de despacho delas já é governada por dependências + retomada automática
+ * na conclusão da dependência. Retorna novo array (cópia rasa da cabeça) quando
+ * há correção — não muta o plano validado, que continua espelhando o que o
+ * humano aprovou. Não rejeita nada: rejeição continua papel de validarPlanoMacro.
+ */
+export function normalizarCabecaMacroAutoStart(tarefas: MacroTarefaPlano[]): MacroTarefaPlano[] {
+  if (tarefas.length === 0) return tarefas;
+  const cabeca = tarefas[0]!;
+  if (cabeca.auto_start || cabeca.depende_de.length > 0) return tarefas;
+  return [{ ...cabeca, auto_start: true }, ...tarefas.slice(1)];
+}
+
 /** external_id idempotente da materialização: macro-<slug>-<n> (n = posição na cadeia, 1-based). */
 export function externalIdMacroTarefa(slug: string, posicao: number): string {
   return `macro-${slug}-${posicao}`;

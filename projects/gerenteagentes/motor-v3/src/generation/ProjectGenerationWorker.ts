@@ -392,16 +392,35 @@ export class ProjectGenerationWorker {
       return
     }
 
-    const [result] = await this.pool.query<ResultSetHeader>(
-      `UPDATE geracoes_projeto SET tasks = ?, status = 'awaiting_approval', updated_at = NOW()
-        WHERE id = ? AND status = 'running' AND worker_id = ?`,
-      [JSON.stringify(outcome.plano), geracaoId, this.config.workerId],
-    )
+    // Avisos de normalização do contrato (ex.: cabeca da cadeia com
+    // auto_start=false corrigida) são ANEXADOS ao feedback da geracao na
+    // mesma transicao/UPDATE — concat no banco (CHAR(10)), nunca sobrescreve
+    // o feedback preexistente de rodadas revise. Os avisos NAO entram no JSON
+    // persistido em tasks (apenas campos do contrato §5).
+    const avisos = outcome.avisos ?? []
+    const planoJson = JSON.stringify(outcome.plano)
+    const [result] = avisos.length > 0
+      ? await this.pool.query<ResultSetHeader>(
+          `UPDATE geracoes_projeto
+              SET tasks = ?, status = 'awaiting_approval',
+                  feedback = CASE
+                    WHEN feedback IS NULL OR TRIM(feedback) = '' THEN ?
+                    ELSE CONCAT(feedback, CHAR(10), ?)
+                  END,
+                  updated_at = NOW()
+            WHERE id = ? AND status = 'running' AND worker_id = ?`,
+          [planoJson, avisos.join('\n'), avisos.join('\n'), geracaoId, this.config.workerId],
+        )
+      : await this.pool.query<ResultSetHeader>(
+          `UPDATE geracoes_projeto SET tasks = ?, status = 'awaiting_approval', updated_at = NOW()
+            WHERE id = ? AND status = 'running' AND worker_id = ?`,
+          [planoJson, geracaoId, this.config.workerId],
+        )
     if (result.affectedRows === 0) {
       console.warn(`[ProjectGenerationWorker] geração ${geracaoId} mudou de dono antes da transição awaiting_approval`)
       return
     }
-    console.log(`[ProjectGenerationWorker] geração ${geracaoId}: plano macro gravado (${outcome.plano.tarefas.length} tarefas, ${outcome.plano.requisitos.length} requisitos) → awaiting_approval`)
+    console.log(`[ProjectGenerationWorker] geração ${geracaoId}: plano macro gravado (${outcome.plano.tarefas.length} tarefas, ${outcome.plano.requisitos.length} requisitos, ${avisos.length} avisos) → awaiting_approval`)
     await this.notifyTransition(() => this.notifier?.notifyAwaitingApproval({
       nome: String(context.nome ?? ''),
       slug: String(context.slug ?? ''),

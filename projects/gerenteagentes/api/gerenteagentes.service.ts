@@ -62,6 +62,7 @@ import { RealtimeMutationBoundaryService, REALTIME_TENANT_PROJECT_ID } from './r
 import {
   validarPlanoMacro,
   ordenarTarefasMacro,
+  normalizarCabecaMacroAutoStart,
   externalIdMacroTarefa,
   truncarTexto,
   montarDescricaoTarefaMacro,
@@ -2886,7 +2887,9 @@ export class GerenteAgentesService {
       throw new UnprocessableEntityException(`Plano macro inválido: ${mensagem}`);
     }
 
-    const ordenadas = ordenarTarefasMacro(plano.tarefas);
+    // Cabeça da cadeia nasce com auto_start=true (incidente 27/11/2026): plano
+    // aprovado inicia sem intervenção manual; demais tarefas mantêm o plano.
+    const ordenadas = normalizarCabecaMacroAutoStart(ordenarTarefasMacro(plano.tarefas));
     const slug = String(projetoCaptado.slug);
     const externalIds = ordenadas.map((_tarefa, indice) => externalIdMacroTarefa(slug, indice + 1));
 

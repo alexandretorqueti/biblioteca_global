@@ -257,7 +257,7 @@ Agrupe por capacidade de sistema, não por tela. Alvo indicativo: 8 a 15 tarefas
 == REGRAS ==
 - Se requerAgenteDedicado=false, nenhuma tarefa pode ter executor "agente-projeto".
 - depende_de expressa ordem topológica linear: cada tarefa referencia apenas tarefas com seq anterior.
-- auto_start=true somente quando o plano justificar execução automática imediata; o default é false (sequência controlada por dependência).
+- auto_start: a PRIMEIRA tarefa da cadeia (menor seq, depende_de vazio) DEVE ter auto_start=true — plano aprovado inicia sem intervenção manual; as demais tarefas usam auto_start=false (a ordem de despacho é governada por dependências + retomada automática dos dependentes na conclusão da dependência).
 - Responda com um ÚNICO JSON no contrato de saída: forma "plano" ou forma "perguntas".
 
 **CONTRATOSAIDA**`,

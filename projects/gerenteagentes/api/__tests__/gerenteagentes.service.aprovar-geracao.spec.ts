@@ -4,7 +4,8 @@
  * materialização de tarefas (docs/PROPOSTA-GERACAO-MACRO-TAREFAS.md §3.2/§4):
  * - approve materializa em transação única: cadeia topológica linear
  *   (depends_on_task_id), external_id macro-<slug>-<n> idempotente,
- *   roteamento por executor, auto_start conforme o plano, lacunas_biblioteca,
+ *   roteamento por executor, auto_start conforme o plano (com a cabeça da
+ *   cadeia sempre normalizada para true — incidente 27/11/2026), lacunas_biblioteca,
  *   ESPEC-CRUD.md, events/outboxes e chat do projeto;
  * - reject não cria nada; revise volta a running com feedback;
  * - requerAgenteDedicado=false + tarefa agente-projeto → 422 sem criar nada;
@@ -345,6 +346,42 @@ describe('GerenteAgentesService.aprovarGeracaoProjeto — approve (materializaç
     expect(resultado.especCrud).toMatchObject({ gravado: true });
   });
 
+  it('cabeça com auto_start=false é normalizada: cabeca nasce autoStart=true e 2..N mantêm o plano', async () => {
+    const planoCabecaFalsa = planoFixture();
+    planoCabecaFalsa.tarefas[0]!.auto_start = false;
+    planoCabecaFalsa.tarefas[1]!.auto_start = false;
+    const { service, insertsNaTabela, updatesNaTabela } = montarCenario({ tasks: planoCabecaFalsa });
+
+    const resultado: any = await chamarAprovacao(service);
+
+    expect(resultado.status).toBe('approved');
+    expect(resultado.tarefasCriadas).toBe(2);
+
+    const inseridas = insertsNaTabela(tarefas);
+    expect(inseridas).toHaveLength(2);
+
+    // Cabeça (seq=1, sem depende_de): mesmo com auto_start=false no plano, o
+    // INSERT nasce autoStart=true — plano aprovado inicia sem intervenção manual.
+    expect(inseridas[0]!.values).toMatchObject({
+      externalId: 'macro-gestao-tarefas-1',
+      dependsOnTaskId: null,
+      autoStart: true,
+    });
+    // A descrição reflete o valor corrigido (sem duplicar lógica no service).
+    expect(String(inseridas[0]!.values.descricao)).toContain('auto_start: sim');
+
+    // Tarefa 2: mantém 1:1 o auto_start do plano (false), ordenada por dependência.
+    expect(inseridas[1]!.values).toMatchObject({
+      externalId: 'macro-gestao-tarefas-2',
+      dependsOnTaskId: 101,
+      autoStart: false,
+    });
+    expect(String(inseridas[1]!.values.descricao)).toContain('auto_start: não');
+
+    // Nenhuma retroedição na tabela tarefas (apenas inserts novos).
+    expect(updatesNaTabela(tarefas)).toHaveLength(0);
+  });
+
   it('é idempotente: external_id existente é reutilizado e não duplica tarefa', async () => {
     const { service, insertsNaTabela, updatesNaTabela } = montarCenario({
       tarefasExistentes: [
@@ -367,6 +404,10 @@ describe('GerenteAgentesService.aprovarGeracaoProjeto — approve (materializaç
     // Outbox/eventos apenas para a tarefa nova.
     expect(insertsNaTabela(motorOutbox)).toHaveLength(1);
     expect(insertsNaTabela(tarefaEventos)).toHaveLength(1);
+
+    // Cabeça já materializada NÃO sofre UPDATE retroativo (nem normalização de
+    // auto_start, nem qualquer outro): re-aprovacao só reutiliza via external_id.
+    expect(updatesNaTabela(tarefas)).toHaveLength(0);
 
     const tasksJson: any = updatesNaTabela(geracoesProjeto)[0]!.set.tasks;
     expect(tasksJson.materializacao.tarefas[0]).toMatchObject({ id: 900, criada: false });

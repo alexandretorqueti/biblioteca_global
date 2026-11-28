@@ -11,6 +11,9 @@ import { sanitizeModelResponse } from '../analysis/AnalystReply.js'
  * é a referência contratual. Decisões de tolerância (documentadas):
  * - lacunas/lacunasBiblioteca/riscos/foraDeFase ausentes → normalizados para [];
  * - perguntas > 8 → truncadas para 8 (o limite do contrato é de apresentação);
+ * - cabeca da cadeia (menor seq) com auto_start=false → NORMALIZADA para true
+ *   com aviso legivel em `outcome.avisos` (o plano nao e rejeitado por isso);
+ *   os avisos ficam FORA do JSON do plano persistido em geracoes_projeto.tasks;
  * - o objeto persistido em geracoes_projeto.tasks é o plano NORMALIZADO
  *   (apenas campos do contrato), não o JSON bruto do modelo.
  *
@@ -72,7 +75,7 @@ export interface MacroPlano {
 }
 
 export type GenerationOutcome =
-  | { kind: 'plano'; plano: MacroPlano }
+  | { kind: 'plano'; plano: MacroPlano; avisos?: string[] }
   | { kind: 'perguntas'; resumo: string; perguntas: string[] }
 
 const CLASSIFICACOES_SISTEMA = ['100% crud', 'misto', 'predominantemente custom'] as const
@@ -246,6 +249,28 @@ function parsePlano(parsed: Record<string, any>): GenerationOutcome {
     violation('requerAgenteDedicado=false, mas existem tarefas com executor "agente-projeto"')
   }
 
+  // Normalizacao da cabeca da cadeia (incidente vitrine-ia, tarefas 1137-1147,
+  // 27/11/2026): as regras cruzadas acima garantem que a menor seq tem
+  // depende_de=[] — ela e a cabeca. Com auto_start=false fica ORFA de gatilho
+  // (dispatch exige auto_start=1; a retomada da tarefa 1121 so aciona
+  // dependentes na CONCLUSAO da dependencia), contradizendo a intencao "plano
+  // aprovado = inicia sem intervencao manual". O contrato corrige para true e
+  // registra aviso legivel — NAO viola nem rejeita o plano por isso. As demais
+  // tarefas mantem o auto_start do plano (a ordem de despacho ja e governada
+  // por dependencias + retomada automatica). Os avisos vao no outcome
+  // (transporte para o feedback da geracao), nunca no JSON do plano.
+  const avisos: string[] = []
+  const primeira = tarefas[0]
+  if (!primeira) violation('tarefas[] vazia após validação (invariante interna do parser)')
+  const cabeca = tarefas.reduce(
+    (menor, tarefa) => (tarefa.seq < menor.seq ? tarefa : menor),
+    primeira,
+  )
+  if (cabeca.auto_start === false) {
+    cabeca.auto_start = true
+    avisos.push(`Normalização automática: tarefa seq ${cabeca.seq} (cabeça da cadeia) tinha auto_start=false; corrigido para true — plano aprovado inicia sem intervenção manual`)
+  }
+
   if (!Array.isArray(parsed.matrizCobertura) || parsed.matrizCobertura.length === 0) violation('matrizCobertura[] é obrigatória (mínimo 1)')
   const matrizCobertura: MacroCobertura[] = parsed.matrizCobertura.map((item: unknown, index: number) => {
     if (!isRecord(item)) violation(`entrada ${index + 1} da matrizCobertura inválida`)
@@ -305,6 +330,7 @@ function parsePlano(parsed: Record<string, any>): GenerationOutcome {
       riscos: stringArray(parsed.riscos, 'riscos'),
       foraDeFase,
     },
+    avisos,
   }
 }
 
