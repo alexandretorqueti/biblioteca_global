@@ -118,10 +118,23 @@ function createFakeDb(
       return header(1)
     }
     if (normalized.startsWith('UPDATE geracoes_projeto SET tasks')) {
-      const [tasks, id, workerId] = p as [string, number, string]
+      // Variante com avisos de normalização (task-p2-1150): SQL inclui
+      // "feedback = CASE ... CONCAT(feedback, CHAR(10), ?)" com params
+      // [tasks, avisos, avisos, id, workerId]. Espelha o CONCAT real: ANEXA com
+      // quebra de linha, nunca sobrescreve o feedback de rodadas revise.
+      const hasAvisos = normalized.includes('feedback = CASE')
+      const [tasks, id, workerId] = hasAvisos
+        ? [p[0] as string, Number(p[3]), String(p[4])]
+        : [p[0] as string, p[1] as number, p[2] as string]
       const row = find(id)
       if (!row || row.status !== 'running' || row.worker_id !== workerId) return header(0)
       row.tasks = tasks
+      if (hasAvisos) {
+        const avisos = String(p[1])
+        row.feedback = row.feedback == null || String(row.feedback).trim() === ''
+          ? avisos
+          : `${row.feedback}\n${avisos}`
+      }
       row.status = 'awaiting_approval'
       return header(1)
     }
@@ -218,6 +231,15 @@ const PERGUNTAS_VALIDAS = JSON.stringify({
   perguntas: ['Há papéis de líder de área?', 'A visibilidade é por organização?'],
 })
 
+// PLANO_VALIDO tem cabeca (seq 1, depende_de=[]) com auto_start=false —
+// reproduz o incidente vitrine-ia (27/11/2026): a cabeca deve nascer
+// normalizada para true no tasks persistido, com aviso anexado ao feedback.
+const PLANO_CABECA_OK = JSON.stringify({
+  ...JSON.parse(PLANO_VALIDO),
+  tarefas: (JSON.parse(PLANO_VALIDO).tarefas as Array<Record<string, unknown>>).map(t =>
+    t.seq === 1 ? { ...t, auto_start: true } : t),
+})
+
 function promptResolverSpy() {
   const inputs: GenerationPromptInput[] = []
   return {
@@ -304,8 +326,49 @@ describe('ProjectGenerationWorker — contrato §5', () => {
     expect(plano.tarefas[1].executor).toBe('agente-projeto')
     expect(plano.matrizCobertura).toHaveLength(2)
     expect(plano.lacunasBiblioteca[0].funcionalidade).toBe('Visão agrupada por área')
+    // Normalização da cabeça (incidente vitrine-ia): seq 1 nascia false → true.
+    expect(plano.tarefas[0].auto_start).toBe(true)
+    // Demais tarefas preservam o auto_start do plano.
+    expect(plano.tarefas[1].auto_start).toBe(false)
+    // Avisos ficam FORA do JSON persistido em tasks (apenas campos do contrato).
+    expect(plano).not.toHaveProperty('avisos')
+    expect(JSON.stringify(plano)).not.toContain('avisos')
+    expect(JSON.stringify(plano.tarefas)).not.toContain('avisos')
+    // Aviso legível anexado ao feedback da geração.
+    expect(geracao.feedback).toContain('Normalização automática')
+    expect(geracao.feedback).toContain('seq 1')
     // Sessão do analista disparada com o agente do projeto.
     expect(console_.createdSessions[0].agentId).toBe('agente-gestao-tarefas')
+  })
+
+  it('avisos de normalização são ANEXADOS ao feedback sem perder o texto de rodada revise anterior', async () => {
+    const db = createFakeDb([{ id: 40, feedback: 'Divida a tarefa 2 em front e backend.' }])
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { worker } = createWorker(db, console_)
+
+    await worker.tick()
+
+    const geracao = db.geracoes[0]
+    expect(geracao.status).toBe('awaiting_approval')
+    expect(geracao.feedback).toMatch(/^Divida a tarefa 2 em front e backend\.\n/)
+    expect(geracao.feedback).toContain('Normalização automática')
+  })
+
+  it('cabeça já com auto_start=true → nenhum aviso; tasks gravado sem tocar no feedback', async () => {
+    const db = createFakeDb([{ id: 41, feedback: 'Apenas texto anterior.' }])
+    const console_ = new FakeConsole([PLANO_CABECA_OK])
+    const { worker } = createWorker(db, console_)
+
+    await worker.tick()
+
+    const geracao = db.geracoes[0]
+    expect(geracao.status).toBe('awaiting_approval')
+    const tasksUpdate = db.queries.find(q => q.sql.startsWith('UPDATE geracoes_projeto SET tasks'))!
+    expect(tasksUpdate.sql).not.toContain('feedback = CASE')
+    expect(geracao.feedback).toBe('Apenas texto anterior.')
+    const plano = JSON.parse(String(geracao.tasks))
+    expect(plano.tarefas[0].auto_start).toBe(true)
+    expect(plano.tarefas[1].auto_start).toBe(false)
   })
 
   it('projeto sem agente vinculado → sessão usa biblioteca-global, nunca o slug (incidente geração 6, 2026-11-20)', async () => {
