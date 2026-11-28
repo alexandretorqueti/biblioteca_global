@@ -21,6 +21,7 @@ import {
   projetosCaptados,
   agentes,
 } from "../../schema"
+import { ensureMotorConfigPadrao } from "../projeto-motor-config-defaults"
 import { IsaChatBridgeService } from "./isa-chat.bridge"
 import { extractTextFromFile } from "@biblioteca-global/file-extract"
 import { normalizeBrPhone } from "@biblioteca-global/shared"
@@ -1169,6 +1170,22 @@ export class IsaChatService {
 
     if (!projeto) {
       throw new Error("Falha ao criar projeto captado")
+    }
+
+    // Registro automático do motor (2026-11-28, fim do bloqueio "repoPath vazio"
+    // — incidente 27/11, tarefa 1138): projeto captado nasce com a linha default
+    // em projeto_motor_config (defaults monorepo espelhando o projeto 1).
+    // Idempotente: nunca sobrescreve linha existente. Falha aqui NÃO aborta a
+    // captação — dispararMissaoSetup refaz o mesmo ensure como safety net.
+    try {
+      const resultadoMotor = await ensureMotorConfigPadrao(db, projeto.id)
+      this.logger.log(
+        `projeto_motor_config do projeto ${projeto.id} ("${nomeProjeto}"): ${resultadoMotor.inserido ? "defaults monorepo registrados" : "linha já existente (intacta)"}`,
+      )
+    } catch (error) {
+      this.logger.warn(
+        `Falha ao registrar projeto_motor_config padrão para o projeto ${projeto.id}: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
 
     // Vincula as definições do buffer ao projeto recém-criado.
