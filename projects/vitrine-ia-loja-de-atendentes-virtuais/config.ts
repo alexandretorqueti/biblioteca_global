@@ -332,9 +332,21 @@ const configBase: GeradorSistemaConfig = {
                 required: true,
                 helperText: "Cliente aceitou o tratamento de dados no envio do pedido",
               },
+              {
+                // Gerado pelo backend no pedido público (POST /api/vitrine/pedidos);
+                // nunca editável pelo painel e oculto na interface gerada.
+                name: "tokenAcompanhamento",
+                label: "Token de acompanhamento",
+                type: "text",
+                required: false,
+                insertable: false,
+                editable: false,
+                gridVisible: false,
+                helperText: "Gerado pelo backend; usado pelo cliente para acompanhar o pedido",
+              },
             ],
             overrides: {
-              hiddenColumns: ["criadoEm", "emAtualizacao"],
+              hiddenColumns: ["criadoEm", "emAtualizacao", "tokenAcompanhamento"],
               columnLabels: { id: "ID", planoId: "Plano", pagamentoId: "Pagamento" },
               newLabel: "Novo pedido",
             },

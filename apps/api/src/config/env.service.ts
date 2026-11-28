@@ -255,6 +255,24 @@ export class EnvService {
     return value
   }
 
+  /**
+   * Diretório de armazenamento dos documentos da vitrine pública
+   * (vitrine-ia — macro #10, posição 3/11). Chave lógica por pedido; o
+   * caminho físico nunca aparece em resposta.
+   */
+  get vitrineDocumentosDir(): string {
+    return this.config.get<string>("VITRINE_DOCUMENTOS_DIR") ?? "/data/vitrine-documentos"
+  }
+
+  /** Limite máximo de bytes por arquivo enviado no formulário público. */
+  get vitrineUploadMaxBytes(): number {
+    const value = Number(this.config.get<string>("VITRINE_UPLOAD_MAX_BYTES") ?? "10485760")
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error("VITRINE_UPLOAD_MAX_BYTES deve ser um inteiro positivo")
+    }
+    return value
+  }
+
   get telegramBotToken(): string {
     return this.config.get<string>("TELEGRAM_BOT_TOKEN") ?? ""
   }

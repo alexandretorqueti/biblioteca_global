@@ -8,6 +8,13 @@
       "when": 1795806078318,
       "tag": "0000_curious_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1795879708231,
+      "tag": "0001_dapper_doomsday",
+      "breakpoints": true
     }
   ]
 }
